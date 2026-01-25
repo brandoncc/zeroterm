@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::app::{App, GroupMode, ThreadImpact, View};
+use crate::app::{App, GroupMode, ThreadImpact, ThreadWarning, View};
 
 /// Warning indicator character for messages
 const WARNING_CHAR: char = '⚠';
@@ -41,20 +41,21 @@ impl ConfirmAction {
         match self {
             ConfirmAction::ArchiveEmails { sender, count, impact } => {
                 let mut lines = vec![format!("Archive {} email(s) from {}?", count, sender)];
-                if impact.has_other_senders() {
-                    if impact.other_sender_emails > 0 {
-                        // Email grouping mode - show specific count
-                        lines.push(format!(
-                            "{} {} thread(s) also contain {} email(s) from other senders",
-                            WARNING_CHAR, impact.multi_sender_threads, impact.other_sender_emails
-                        ));
-                        lines.push("(only emails from this sender will be archived)".to_string());
-                    } else {
-                        // Domain grouping mode - warn about multi-participant threads
-                        lines.push(format!(
-                            "{} {} thread(s) have multiple participants",
-                            WARNING_CHAR, impact.multi_sender_threads
-                        ));
+                if let Some(warning) = &impact.warning {
+                    match warning {
+                        ThreadWarning::SenderEmailMode { thread_count, email_count } => {
+                            lines.push(format!(
+                                "{} {} thread(s) also contain {} email(s) from other senders",
+                                WARNING_CHAR, thread_count, email_count
+                            ));
+                            lines.push("(only emails from this sender will be archived)".to_string());
+                        }
+                        ThreadWarning::DomainMode { thread_count } => {
+                            lines.push(format!(
+                                "{} {} thread(s) have multiple participants",
+                                WARNING_CHAR, thread_count
+                            ));
+                        }
                     }
                 }
                 lines.push("(y/n)".to_string());
@@ -62,20 +63,21 @@ impl ConfirmAction {
             }
             ConfirmAction::DeleteEmails { sender, count, impact } => {
                 let mut lines = vec![format!("Delete {} email(s) from {}?", count, sender)];
-                if impact.has_other_senders() {
-                    if impact.other_sender_emails > 0 {
-                        // Email grouping mode - show specific count
-                        lines.push(format!(
-                            "{} {} thread(s) also contain {} email(s) from other senders",
-                            WARNING_CHAR, impact.multi_sender_threads, impact.other_sender_emails
-                        ));
-                        lines.push("(only emails from this sender will be deleted)".to_string());
-                    } else {
-                        // Domain grouping mode - warn about multi-participant threads
-                        lines.push(format!(
-                            "{} {} thread(s) have multiple participants",
-                            WARNING_CHAR, impact.multi_sender_threads
-                        ));
+                if let Some(warning) = &impact.warning {
+                    match warning {
+                        ThreadWarning::SenderEmailMode { thread_count, email_count } => {
+                            lines.push(format!(
+                                "{} {} thread(s) also contain {} email(s) from other senders",
+                                WARNING_CHAR, thread_count, email_count
+                            ));
+                            lines.push("(only emails from this sender will be deleted)".to_string());
+                        }
+                        ThreadWarning::DomainMode { thread_count } => {
+                            lines.push(format!(
+                                "{} {} thread(s) have multiple participants",
+                                WARNING_CHAR, thread_count
+                            ));
+                        }
                     }
                 }
                 lines.push("(y/n)".to_string());
@@ -381,18 +383,14 @@ impl Widget for ConfirmDialogWidget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ThreadImpact;
+    use crate::app::{ThreadImpact, ThreadWarning};
 
     #[test]
     fn test_confirm_action_archive_no_impact() {
         let action = ConfirmAction::ArchiveEmails {
             sender: "test@example.com".to_string(),
             count: 5,
-            impact: ThreadImpact {
-                single_sender_threads: 5,
-                multi_sender_threads: 0,
-                other_sender_emails: 0,
-            },
+            impact: ThreadImpact { warning: None },
         };
         let lines = action.message();
         assert_eq!(lines.len(), 2);
@@ -406,9 +404,10 @@ mod tests {
             sender: "test@example.com".to_string(),
             count: 5,
             impact: ThreadImpact {
-                single_sender_threads: 3,
-                multi_sender_threads: 2,
-                other_sender_emails: 4,
+                warning: Some(ThreadWarning::SenderEmailMode {
+                    thread_count: 2,
+                    email_count: 4,
+                }),
             },
         };
         let lines = action.message();

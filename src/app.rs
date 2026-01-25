@@ -47,21 +47,22 @@ impl EmailGroup {
     }
 }
 
-/// Information about threads that would be affected by an action
+/// Warning about threads with multiple participants
 #[derive(Debug, Clone, PartialEq)]
-pub struct ThreadImpact {
-    /// Number of threads that only contain emails from the target sender
-    pub single_sender_threads: usize,
-    /// Number of threads that contain emails from other senders too
-    pub multi_sender_threads: usize,
-    /// Total emails from other senders that would be affected
-    pub other_sender_emails: usize,
+pub enum ThreadWarning {
+    /// Sender email grouping mode: threads contain emails from other senders
+    SenderEmailMode {
+        thread_count: usize,
+        email_count: usize,
+    },
+    /// Domain grouping mode: threads have multiple participants
+    DomainMode { thread_count: usize },
 }
 
-impl ThreadImpact {
-    pub fn has_other_senders(&self) -> bool {
-        self.multi_sender_threads > 0
-    }
+/// Information about threads that would be affected by an action
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ThreadImpact {
+    pub warning: Option<ThreadWarning>,
 }
 
 /// The main application state
@@ -336,17 +337,12 @@ impl App {
     /// Calculates the impact of archiving/deleting all emails in the current group
     pub fn current_group_thread_impact(&self) -> ThreadImpact {
         let Some(group) = self.current_group() else {
-            return ThreadImpact {
-                single_sender_threads: 0,
-                multi_sender_threads: 0,
-                other_sender_emails: 0,
-            };
+            return ThreadImpact::default();
         };
 
         let group_key = &group.key;
         let thread_ids = self.current_group_thread_ids();
 
-        let mut single_sender_threads = 0;
         let mut multi_sender_threads = 0;
         let mut other_sender_emails = 0;
 
@@ -357,18 +353,13 @@ impl App {
                 .filter(|e| &e.thread_id == thread_id)
                 .collect();
 
-            // Check for multiple senders by email address
             let senders: HashSet<&str> = thread_emails
                 .iter()
                 .map(|e| e.from_email.as_str())
                 .collect();
 
-            if senders.len() == 1 {
-                single_sender_threads += 1;
-            } else {
+            if senders.len() > 1 {
                 multi_sender_threads += 1;
-                // In email mode, count emails from other senders
-                // In domain mode, other_sender_emails is not meaningful (all senders in the domain are in the group)
                 if self.group_mode == GroupMode::ByEmail {
                     other_sender_emails += thread_emails
                         .iter()
@@ -378,21 +369,27 @@ impl App {
             }
         }
 
-        ThreadImpact {
-            single_sender_threads,
-            multi_sender_threads,
-            other_sender_emails,
-        }
+        let warning = if multi_sender_threads > 0 {
+            Some(match self.group_mode {
+                GroupMode::ByEmail => ThreadWarning::SenderEmailMode {
+                    thread_count: multi_sender_threads,
+                    email_count: other_sender_emails,
+                },
+                GroupMode::ByDomain => ThreadWarning::DomainMode {
+                    thread_count: multi_sender_threads,
+                },
+            })
+        } else {
+            None
+        };
+
+        ThreadImpact { warning }
     }
 
     /// Calculates the impact of archiving/deleting the currently selected email
     pub fn current_email_thread_impact(&self) -> ThreadImpact {
         let Some(email) = self.current_email() else {
-            return ThreadImpact {
-                single_sender_threads: 0,
-                multi_sender_threads: 0,
-                other_sender_emails: 0,
-            };
+            return ThreadImpact::default();
         };
 
         if self.thread_has_multiple_senders(&email.thread_id) {
@@ -403,16 +400,13 @@ impl App {
                 .count();
 
             ThreadImpact {
-                single_sender_threads: 0,
-                multi_sender_threads: 1,
-                other_sender_emails: other_count,
+                warning: Some(ThreadWarning::SenderEmailMode {
+                    thread_count: 1,
+                    email_count: other_count,
+                }),
             }
         } else {
-            ThreadImpact {
-                single_sender_threads: 1,
-                multi_sender_threads: 0,
-                other_sender_emails: 0,
-            }
+            ThreadImpact::default()
         }
     }
 
@@ -748,10 +742,7 @@ mod tests {
         app.selected_email = Some(0);
 
         let impact = app.current_email_thread_impact();
-        assert_eq!(impact.single_sender_threads, 1);
-        assert_eq!(impact.multi_sender_threads, 0);
-        assert_eq!(impact.other_sender_emails, 0);
-        assert!(!impact.has_other_senders());
+        assert!(impact.warning.is_none());
     }
 
     #[test]
@@ -774,10 +765,13 @@ mod tests {
         app.selected_email = Some(0);
 
         let impact = app.current_email_thread_impact();
-        assert_eq!(impact.single_sender_threads, 0);
-        assert_eq!(impact.multi_sender_threads, 1);
-        assert_eq!(impact.other_sender_emails, 2); // bob and charlie
-        assert!(impact.has_other_senders());
+        assert_eq!(
+            impact.warning,
+            Some(ThreadWarning::SenderEmailMode {
+                thread_count: 1,
+                email_count: 2, // bob and charlie
+            })
+        );
     }
 
     #[test]
@@ -800,9 +794,13 @@ mod tests {
         app.selected_group = alice_idx;
 
         let impact = app.current_group_thread_impact();
-        assert_eq!(impact.single_sender_threads, 1);
-        assert_eq!(impact.multi_sender_threads, 1);
-        assert_eq!(impact.other_sender_emails, 1); // bob's email
+        assert_eq!(
+            impact.warning,
+            Some(ThreadWarning::SenderEmailMode {
+                thread_count: 1,
+                email_count: 1, // bob's email
+            })
+        );
     }
 
     #[test]
@@ -826,12 +824,11 @@ mod tests {
         app.selected_group = example_idx;
 
         let impact = app.current_group_thread_impact();
-        assert_eq!(impact.single_sender_threads, 1); // thread_b
-        assert_eq!(impact.multi_sender_threads, 1); // thread_a has alice and bob
-        // In domain mode, other_sender_emails is 0 because all senders are in the domain
-        assert_eq!(impact.other_sender_emails, 0);
-        // But has_other_senders() should still be true due to multi_sender_threads
-        assert!(impact.has_other_senders());
+        // In domain mode, we warn about multi-participant threads
+        assert_eq!(
+            impact.warning,
+            Some(ThreadWarning::DomainMode { thread_count: 1 })
+        );
     }
 
     #[test]
