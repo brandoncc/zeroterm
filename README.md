@@ -10,24 +10,57 @@ A terminal-based email client designed for achieving inbox zero. Zeroterm groups
 
 - **Group by sender email**: Group all emails from a specific address (e.g., `notifications@github.com`)
 - **Group by sender domain**: Group all emails from a domain (e.g., `@quora.com`)
-- **Individual actions**: Archive or delete specific emails within a group
-- **Bulk actions**: Archive or delete all emails in a group at once
+- **Three-level navigation**: Groups → Emails → Thread view
+- **Thread-aware actions**: See exactly what will be affected before archiving/deleting
+- **Bulk actions**: Archive or delete all emails from a sender at once
 - **Keyboard-driven**: Navigate and manage emails entirely via keyboard shortcuts
+
+## How Thread Handling Works
+
+Zeroterm provides clear control over what gets archived or deleted:
+
+1. **Group/Email views**: Actions only affect emails from that specific sender
+   - If a thread contains emails from multiple people, only the selected sender's emails are affected
+   - A warning shows when threads contain other participants
+
+2. **Thread view**: Press `Enter` on an email to see the full thread
+   - All emails in the thread are shown, including from other senders
+   - Actions in this view affect the **entire thread** (what you see is what you get)
+
+This design ensures you always know exactly what emails will be affected before taking action.
 
 ## Keyboard Shortcuts
 
+### All Views
 | Key | Action |
 |-----|--------|
 | `j` / `↓` | Move down |
 | `k` / `↑` | Move up |
-| `Enter` | Open group / View email |
-| `a` | Archive selected email |
-| `A` | Archive all emails in group |
-| `d` | Delete selected email |
-| `D` | Delete all emails in group |
 | `g` | Toggle grouping mode (email/domain) |
 | `r` | Refresh emails |
 | `q` | Quit / Go back |
+
+### Group List View
+| Key | Action |
+|-----|--------|
+| `Enter` | Open group (view emails) |
+| `A` | Archive all emails from sender |
+| `D` | Delete all emails from sender |
+
+### Email List View
+| Key | Action |
+|-----|--------|
+| `Enter` | View full thread |
+| `a` | Archive selected email |
+| `A` | Archive all emails from sender |
+| `d` | Delete selected email |
+| `D` | Delete all emails from sender |
+
+### Thread View
+| Key | Action |
+|-----|--------|
+| `A` | Archive entire thread (with confirmation) |
+| `D` | Delete entire thread (with confirmation) |
 
 ## Supported Email Providers
 

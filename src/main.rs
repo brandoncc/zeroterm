@@ -156,11 +156,11 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
     Ok(())
 }
 
-/// Handles the 'a' key - archive single email or thread
+/// Handles the 'a' key - archive single email (not available in thread view)
 async fn handle_archive(
     app: &mut App,
     client: &RealGmailClient,
-    ui_state: &mut UiState,
+    _ui_state: &mut UiState,
 ) -> Result<()> {
     match app.view {
         View::GroupList => {
@@ -174,13 +174,7 @@ async fn handle_archive(
             }
         }
         View::ThreadView => {
-            // In thread view, 'a' archives the entire thread
-            let thread_count = app.current_thread_emails().len();
-            if thread_count > 0 {
-                ui_state.set_confirm(ConfirmAction::ArchiveThread {
-                    thread_email_count: thread_count,
-                });
-            }
+            // No lowercase 'a' in thread view - use 'A' to archive entire thread
         }
     }
     Ok(())
@@ -211,11 +205,11 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState) {
     }
 }
 
-/// Handles the 'd' key - delete single email or thread
+/// Handles the 'd' key - delete single email (not available in thread view)
 async fn handle_delete(
     app: &mut App,
     client: &RealGmailClient,
-    ui_state: &mut UiState,
+    _ui_state: &mut UiState,
 ) -> Result<()> {
     match app.view {
         View::GroupList => {
@@ -229,13 +223,7 @@ async fn handle_delete(
             }
         }
         View::ThreadView => {
-            // In thread view, 'd' deletes the entire thread
-            let thread_count = app.current_thread_emails().len();
-            if thread_count > 0 {
-                ui_state.set_confirm(ConfirmAction::DeleteThread {
-                    thread_email_count: thread_count,
-                });
-            }
+            // No lowercase 'd' in thread view - use 'D' to delete entire thread
         }
     }
     Ok(())
