@@ -51,12 +51,14 @@ pub fn extract_email(from: &str) -> String {
     }
 }
 
-/// Extracts the domain from an email address
+/// Extracts the domain from an email address.
+/// If no `@` is present, returns the full email to avoid grouping unrelated
+/// malformed addresses together.
 pub fn extract_domain(email: &str) -> String {
     email
         .split('@')
         .nth(1)
-        .unwrap_or("")
+        .unwrap_or(email)
         .to_string()
 }
 
@@ -106,8 +108,9 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_domain_no_at_symbol() {
-        assert_eq!(extract_domain("invalid"), "");
+    fn test_extract_domain_no_at_symbol_returns_full_input() {
+        // Returns full input to avoid grouping unrelated malformed addresses
+        assert_eq!(extract_domain("invalid"), "invalid");
     }
 
     #[test]
