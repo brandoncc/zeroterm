@@ -166,7 +166,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
     let (resp_tx, resp_rx) = mpsc::channel::<ImapResponse>();
 
     // Show connecting status
-    ui_state.set_status("Connecting...");
+    ui_state.set_busy("Connecting...");
     terminal.draw(|f| render(f, &app, &ui_state))?;
 
     // Spawn IMAP worker thread
@@ -177,7 +177,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
         // Check for responses
         match resp_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(ImapResponse::Connected) => {
-                ui_state.set_status("Loading emails...");
+                ui_state.set_busy("Loading emails...");
                 terminal.draw(|f| render(f, &app, &ui_state))?;
                 cmd_tx.send(ImapCommand::FetchInbox)?;
                 break;
@@ -205,6 +205,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
 
     // Main event loop
     loop {
+        // Tick spinner animation when busy
+        if ui_state.is_busy() {
+            ui_state.tick_spinner();
+        }
+
         terminal.draw(|f| render(f, &app, &ui_state))?;
 
         // Check for IMAP responses (non-blocking)
@@ -214,9 +219,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                     match result {
                         Ok(emails) => {
                             app.set_emails(emails);
-                            ui_state.clear_status();
+                            ui_state.clear_busy();
                         }
                         Err(e) => {
+                            ui_state.clear_busy();
                             ui_state.set_status(&format!("Error: {}", e));
                         }
                     }
@@ -227,7 +233,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                             app.remove_email(&id);
                         }
                     }
-                    ui_state.clear_status();
+                    ui_state.clear_busy();
                 }
                 ImapResponse::DeleteResult(result) => {
                     if let Some(PendingOp::DeleteSingle(id)) = pending_operation.take() {
@@ -235,7 +241,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                             app.remove_email(&id);
                         }
                     }
-                    ui_state.clear_status();
+                    ui_state.clear_busy();
                 }
                 ImapResponse::MultiArchiveResult(result) => {
                     if let Some(op) = pending_operation.take() {
@@ -254,7 +260,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                             }
                         }
                     }
-                    ui_state.clear_status();
+                    ui_state.clear_busy();
                 }
                 ImapResponse::MultiDeleteResult(result) => {
                     if let Some(op) = pending_operation.take() {
@@ -273,7 +279,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                             }
                         }
                     }
-                    ui_state.clear_status();
+                    ui_state.clear_busy();
                 }
                 _ => {}
             }
@@ -283,6 +289,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                // Block input when busy (except we still consume events to avoid queue buildup)
+                if ui_state.is_busy() {
                     continue;
                 }
 
@@ -331,7 +342,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                         app.toggle_group_mode();
                     }
                     KeyCode::Char('r') => {
-                        ui_state.set_status("Refreshing...");
+                        ui_state.set_busy("Refreshing...");
                         cmd_tx.send(ImapCommand::FetchInbox)?;
                     }
                     KeyCode::Char('a') => {
@@ -379,7 +390,7 @@ fn handle_archive(
         View::EmailList => {
             // Archive single email (only this sender's email)
             if let Some(email) = app.current_email().cloned() {
-                ui_state.set_status("Archiving...");
+                ui_state.set_busy("Archiving...");
                 *pending_operation = Some(PendingOp::ArchiveSingle(email.id.clone()));
                 cmd_tx.send(ImapCommand::ArchiveEmail(email.id))?;
             }
@@ -430,7 +441,7 @@ fn handle_delete(
         View::EmailList => {
             // Delete single email (only this sender's email)
             if let Some(email) = app.current_email().cloned() {
-                ui_state.set_status("Deleting...");
+                ui_state.set_busy("Deleting...");
                 *pending_operation = Some(PendingOp::DeleteSingle(email.id.clone()));
                 cmd_tx.send(ImapCommand::DeleteEmail(email.id))?;
             }
@@ -480,7 +491,7 @@ fn handle_confirmed_action(
             // Archive only this sender's emails (not full threads)
             let email_ids = app.current_group_email_ids();
             if !email_ids.is_empty() {
-                ui_state.set_status(&format!("Archiving {} emails...", email_ids.len()));
+                ui_state.set_busy(&format!("Archiving {} emails...", email_ids.len()));
                 *pending_operation = Some(PendingOp::ArchiveGroup);
                 cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
             }
@@ -489,7 +500,7 @@ fn handle_confirmed_action(
             // Delete only this sender's emails (not full threads)
             let email_ids = app.current_group_email_ids();
             if !email_ids.is_empty() {
-                ui_state.set_status(&format!("Deleting {} emails...", email_ids.len()));
+                ui_state.set_busy(&format!("Deleting {} emails...", email_ids.len()));
                 *pending_operation = Some(PendingOp::DeleteGroup);
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
@@ -500,7 +511,7 @@ fn handle_confirmed_action(
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
             if !email_ids.is_empty() {
                 if let Some(tid) = thread_id {
-                    ui_state.set_status(&format!("Archiving thread ({} emails)...", email_ids.len()));
+                    ui_state.set_busy(&format!("Archiving thread ({} emails)...", email_ids.len()));
                     *pending_operation = Some(PendingOp::ArchiveThread(tid));
                     cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
                 }
@@ -512,7 +523,7 @@ fn handle_confirmed_action(
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
             if !email_ids.is_empty() {
                 if let Some(tid) = thread_id {
-                    ui_state.set_status(&format!("Deleting thread ({} emails)...", email_ids.len()));
+                    ui_state.set_busy(&format!("Deleting thread ({} emails)...", email_ids.len()));
                     *pending_operation = Some(PendingOp::DeleteThread(tid));
                     cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
                 }

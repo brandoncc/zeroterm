@@ -99,11 +99,18 @@ impl ConfirmAction {
     }
 }
 
+/// Spinner frames for animated busy indicator
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 /// UI state that supplements App state
 #[derive(Debug, Default)]
 pub struct UiState {
     pub confirm_action: Option<ConfirmAction>,
     pub status_message: Option<String>,
+    /// When true, the UI is busy with an IMAP operation and input is blocked
+    pub busy: bool,
+    /// Frame counter for spinner animation
+    pub spinner_frame: usize,
 }
 
 impl UiState {
@@ -129,6 +136,91 @@ impl UiState {
 
     pub fn clear_status(&mut self) {
         self.status_message = None;
+    }
+
+    /// Set busy state with a status message (blocks input)
+    pub fn set_busy(&mut self, msg: impl Into<String>) {
+        self.busy = true;
+        self.status_message = Some(msg.into());
+        self.spinner_frame = 0;
+    }
+
+    /// Clear busy state
+    pub fn clear_busy(&mut self) {
+        self.busy = false;
+        self.status_message = None;
+    }
+
+    /// Returns true if the UI is busy and input should be blocked
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Advance the spinner animation frame
+    pub fn tick_spinner(&mut self) {
+        self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+    }
+
+    /// Get the current spinner character
+    pub fn spinner_char(&self) -> char {
+        SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+}
+
+/// Widget for the busy/loading modal overlay
+pub struct BusyModalWidget<'a> {
+    message: &'a str,
+    spinner: char,
+}
+
+impl<'a> BusyModalWidget<'a> {
+    pub fn new(message: &'a str, spinner: char) -> Self {
+        Self { message, spinner }
+    }
+}
+
+impl Widget for BusyModalWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        // Format message with spinner
+        let display_msg = format!("{} {}", self.spinner, self.message);
+
+        // Calculate centered box size
+        let msg_width = display_msg.len() as u16 + 4;
+        let box_width = msg_width.max(20).min(area.width.saturating_sub(4));
+        let box_height = 3;
+
+        let x = area.x + (area.width.saturating_sub(box_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(box_height)) / 2;
+
+        let modal_area = Rect::new(x, y, box_width, box_height);
+
+        // Clear the area behind the modal
+        for row in modal_area.y..modal_area.y + modal_area.height {
+            for col in modal_area.x..modal_area.x + modal_area.width {
+                buf[(col, row)].set_char(' ');
+                buf[(col, row)].set_style(Style::default());
+            }
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(Style::default());
+
+        let inner = block.inner(modal_area);
+        block.render(modal_area, buf);
+
+        // Center the message with spinner
+        let msg_x = inner.x + (inner.width.saturating_sub(display_msg.len() as u16)) / 2;
+        buf.set_line(
+            msg_x,
+            inner.y,
+            &Line::from(Span::styled(
+                display_msg,
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )),
+            inner.width,
+        );
     }
 }
 

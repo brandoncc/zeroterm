@@ -5,7 +5,8 @@ use ratatui::{
 
 use crate::app::{App, View};
 use crate::ui::widgets::{
-    ConfirmDialogWidget, EmailListWidget, GroupListWidget, HelpBarWidget, ThreadViewWidget, UiState,
+    BusyModalWidget, ConfirmDialogWidget, EmailListWidget, GroupListWidget, HelpBarWidget,
+    ThreadViewWidget, UiState,
 };
 
 /// Renders the entire application UI
@@ -43,6 +44,14 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &UiState) {
         let dialog_area = centered_rect(60, 30, frame.area());
         let dialog = ConfirmDialogWidget::new(action);
         frame.render_widget(dialog, dialog_area);
+    }
+
+    // Render busy modal if active (takes priority over confirmation)
+    if ui_state.is_busy() {
+        if let Some(msg) = &ui_state.status_message {
+            let modal = BusyModalWidget::new(msg, ui_state.spinner_char());
+            frame.render_widget(modal, frame.area());
+        }
     }
 }
 
