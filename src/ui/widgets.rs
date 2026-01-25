@@ -146,7 +146,7 @@ impl<'a> GroupListWidget<'a> {
 impl Widget for GroupListWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mode_str = match self.app.group_mode {
-            GroupMode::ByEmail => "email",
+            GroupMode::BySenderEmail => "email",
             GroupMode::ByDomain => "domain",
         };
         let title = format!(" Senders (by {}) ", mode_str);

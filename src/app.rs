@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum GroupMode {
     #[default]
-    ByEmail,
+    BySenderEmail,
     ByDomain,
 }
 
@@ -113,7 +113,7 @@ impl App {
 
         for email in &self.emails {
             let key = match self.group_mode {
-                GroupMode::ByEmail => email.from_email.clone(),
+                GroupMode::BySenderEmail => email.from_email.clone(),
                 GroupMode::ByDomain => email.from_domain.clone(),
             };
             group_map.entry(key).or_default().push(email.clone());
@@ -137,11 +137,11 @@ impl App {
         }
     }
 
-    /// Toggles between ByEmail and ByDomain grouping modes
+    /// Toggles between BySenderEmail and ByDomain grouping modes
     pub fn toggle_group_mode(&mut self) {
         self.group_mode = match self.group_mode {
-            GroupMode::ByEmail => GroupMode::ByDomain,
-            GroupMode::ByDomain => GroupMode::ByEmail,
+            GroupMode::BySenderEmail => GroupMode::ByDomain,
+            GroupMode::ByDomain => GroupMode::BySenderEmail,
         };
         self.regroup();
         self.selected_group = 0;
@@ -360,7 +360,7 @@ impl App {
 
             if senders.len() > 1 {
                 multi_sender_threads += 1;
-                if self.group_mode == GroupMode::ByEmail {
+                if self.group_mode == GroupMode::BySenderEmail {
                     other_sender_emails += thread_emails
                         .iter()
                         .filter(|e| &e.from_email != group_key)
@@ -371,7 +371,7 @@ impl App {
 
         let warning = if multi_sender_threads > 0 {
             Some(match self.group_mode {
-                GroupMode::ByEmail => ThreadWarning::SenderEmailMode {
+                GroupMode::BySenderEmail => ThreadWarning::SenderEmailMode {
                     thread_count: multi_sender_threads,
                     email_count: other_sender_emails,
                 },
@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn test_app_default_state() {
         let app = App::new();
-        assert_eq!(app.group_mode, GroupMode::ByEmail);
+        assert_eq!(app.group_mode, GroupMode::BySenderEmail);
         assert_eq!(app.view, View::GroupList);
         assert_eq!(app.selected_group, 0);
         assert_eq!(app.selected_email, None);
@@ -582,13 +582,13 @@ mod tests {
     #[test]
     fn test_toggle_group_mode() {
         let mut app = App::new();
-        assert_eq!(app.group_mode, GroupMode::ByEmail);
+        assert_eq!(app.group_mode, GroupMode::BySenderEmail);
 
         app.toggle_group_mode();
         assert_eq!(app.group_mode, GroupMode::ByDomain);
 
         app.toggle_group_mode();
-        assert_eq!(app.group_mode, GroupMode::ByEmail);
+        assert_eq!(app.group_mode, GroupMode::BySenderEmail);
     }
 
     #[test]
