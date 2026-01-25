@@ -26,6 +26,7 @@ A terminal-based email client designed for achieving inbox zero. Zeroterm groups
 | `d` | Delete selected email |
 | `D` | Delete all emails in group |
 | `g` | Toggle grouping mode (email/domain) |
+| `r` | Refresh emails |
 | `q` | Quit / Go back |
 
 ## Supported Email Providers
@@ -44,6 +45,34 @@ cargo build --release
 
 # The binary will be at target/release/zeroterm
 ```
+
+## Google Cloud Setup
+
+Before using Zeroterm, you need to set up OAuth2 credentials:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project (or select an existing one)
+3. Enable the Gmail API:
+   - Navigate to "APIs & Services" > "Library"
+   - Search for "Gmail API" and enable it
+4. Configure the OAuth consent screen:
+   - Go to "APIs & Services" > "OAuth consent screen"
+   - Choose "External" user type
+   - Fill in the required fields (app name, user support email, developer contact)
+   - Add the scope: `https://mail.google.com/`
+   - Add your email as a test user
+5. Create OAuth2 credentials:
+   - Go to "APIs & Services" > "Credentials"
+   - Click "Create Credentials" > "OAuth client ID"
+   - Choose "Desktop app" as the application type
+   - Download the credentials JSON file
+6. Save the credentials file:
+   ```sh
+   mkdir -p ~/.config/zeroterm
+   mv ~/Downloads/client_secret_*.json ~/.config/zeroterm/client_secret.json
+   ```
+
+On first run, Zeroterm will open a browser for you to authorize access to your Gmail account.
 
 ## Usage
 
