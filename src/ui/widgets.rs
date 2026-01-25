@@ -42,11 +42,20 @@ impl ConfirmAction {
             ConfirmAction::ArchiveEmails { sender, count, impact } => {
                 let mut lines = vec![format!("Archive {} email(s) from {}?", count, sender)];
                 if impact.has_other_senders() {
-                    lines.push(format!(
-                        "{} {} thread(s) also contain {} email(s) from other senders",
-                        WARNING_CHAR, impact.multi_sender_threads, impact.other_sender_emails
-                    ));
-                    lines.push("(only emails from this sender will be archived)".to_string());
+                    if impact.other_sender_emails > 0 {
+                        // Email grouping mode - show specific count
+                        lines.push(format!(
+                            "{} {} thread(s) also contain {} email(s) from other senders",
+                            WARNING_CHAR, impact.multi_sender_threads, impact.other_sender_emails
+                        ));
+                        lines.push("(only emails from this sender will be archived)".to_string());
+                    } else {
+                        // Domain grouping mode - warn about multi-participant threads
+                        lines.push(format!(
+                            "{} {} thread(s) have multiple participants",
+                            WARNING_CHAR, impact.multi_sender_threads
+                        ));
+                    }
                 }
                 lines.push("(y/n)".to_string());
                 lines
@@ -54,11 +63,20 @@ impl ConfirmAction {
             ConfirmAction::DeleteEmails { sender, count, impact } => {
                 let mut lines = vec![format!("Delete {} email(s) from {}?", count, sender)];
                 if impact.has_other_senders() {
-                    lines.push(format!(
-                        "{} {} thread(s) also contain {} email(s) from other senders",
-                        WARNING_CHAR, impact.multi_sender_threads, impact.other_sender_emails
-                    ));
-                    lines.push("(only emails from this sender will be deleted)".to_string());
+                    if impact.other_sender_emails > 0 {
+                        // Email grouping mode - show specific count
+                        lines.push(format!(
+                            "{} {} thread(s) also contain {} email(s) from other senders",
+                            WARNING_CHAR, impact.multi_sender_threads, impact.other_sender_emails
+                        ));
+                        lines.push("(only emails from this sender will be deleted)".to_string());
+                    } else {
+                        // Domain grouping mode - warn about multi-participant threads
+                        lines.push(format!(
+                            "{} {} thread(s) have multiple participants",
+                            WARNING_CHAR, impact.multi_sender_threads
+                        ));
+                    }
                 }
                 lines.push("(y/n)".to_string());
                 lines

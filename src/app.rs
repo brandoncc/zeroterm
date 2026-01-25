@@ -357,6 +357,7 @@ impl App {
                 .filter(|e| &e.thread_id == thread_id)
                 .collect();
 
+            // Check for multiple senders by email address
             let senders: HashSet<&str> = thread_emails
                 .iter()
                 .map(|e| e.from_email.as_str())
@@ -366,17 +367,14 @@ impl App {
                 single_sender_threads += 1;
             } else {
                 multi_sender_threads += 1;
-                // Count emails from other senders in this thread
-                other_sender_emails += thread_emails
-                    .iter()
-                    .filter(|e| {
-                        let key = match self.group_mode {
-                            GroupMode::ByEmail => &e.from_email,
-                            GroupMode::ByDomain => &e.from_domain,
-                        };
-                        key != group_key
-                    })
-                    .count();
+                // In email mode, count emails from other senders
+                // In domain mode, other_sender_emails is not meaningful (all senders in the domain are in the group)
+                if self.group_mode == GroupMode::ByEmail {
+                    other_sender_emails += thread_emails
+                        .iter()
+                        .filter(|e| &e.from_email != group_key)
+                        .count();
+                }
             }
         }
 
@@ -783,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn test_group_thread_impact() {
+    fn test_group_thread_impact_email_mode() {
         let mut app = App::new();
         app.set_emails(vec![
             // Thread with only alice
@@ -793,7 +791,7 @@ mod tests {
             create_test_email_with_thread("3", "thread_b", "bob@example.com"),
         ]);
 
-        // Select alice's group
+        // Select alice's group (email mode is default)
         let alice_idx = app
             .groups
             .iter()
@@ -805,6 +803,35 @@ mod tests {
         assert_eq!(impact.single_sender_threads, 1);
         assert_eq!(impact.multi_sender_threads, 1);
         assert_eq!(impact.other_sender_emails, 1); // bob's email
+    }
+
+    #[test]
+    fn test_group_thread_impact_domain_mode() {
+        let mut app = App::new();
+        app.group_mode = GroupMode::ByDomain;
+        app.set_emails(vec![
+            // Thread with alice and bob (both @example.com)
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            // Single sender thread
+            create_test_email_with_thread("3", "thread_b", "charlie@example.com"),
+        ]);
+
+        // Select example.com group
+        let example_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "example.com")
+            .unwrap();
+        app.selected_group = example_idx;
+
+        let impact = app.current_group_thread_impact();
+        assert_eq!(impact.single_sender_threads, 1); // thread_b
+        assert_eq!(impact.multi_sender_threads, 1); // thread_a has alice and bob
+        // In domain mode, other_sender_emails is 0 because all senders are in the domain
+        assert_eq!(impact.other_sender_emails, 0);
+        // But has_other_senders() should still be true due to multi_sender_threads
+        assert!(impact.has_other_senders());
     }
 
     #[test]
