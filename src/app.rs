@@ -1,5 +1,5 @@
 use crate::email::Email;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The grouping mode for emails
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -15,6 +15,7 @@ pub enum View {
     #[default]
     GroupList,
     EmailList,
+    ThreadView,
 }
 
 /// Represents a group of emails from the same sender
@@ -35,6 +36,32 @@ impl EmailGroup {
     pub fn count(&self) -> usize {
         self.emails.len()
     }
+
+    /// Returns the number of unique threads in this group
+    pub fn thread_count(&self) -> usize {
+        self.emails
+            .iter()
+            .map(|e| &e.thread_id)
+            .collect::<HashSet<_>>()
+            .len()
+    }
+}
+
+/// Information about threads that would be affected by an action
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadImpact {
+    /// Number of threads that only contain emails from the target sender
+    pub single_sender_threads: usize,
+    /// Number of threads that contain emails from other senders too
+    pub multi_sender_threads: usize,
+    /// Total emails from other senders that would be affected
+    pub other_sender_emails: usize,
+}
+
+impl ThreadImpact {
+    pub fn has_other_senders(&self) -> bool {
+        self.multi_sender_threads > 0
+    }
 }
 
 /// The main application state
@@ -44,6 +71,7 @@ pub struct App {
     pub group_mode: GroupMode,
     pub selected_group: usize,
     pub selected_email: Option<usize>,
+    pub selected_thread_email: Option<usize>,
     pub view: View,
     emails: Vec<Email>,
 }
@@ -61,6 +89,7 @@ impl App {
             group_mode: GroupMode::default(),
             selected_group: 0,
             selected_email: None,
+            selected_thread_email: None,
             view: View::default(),
             emails: Vec::new(),
         }
@@ -70,6 +99,11 @@ impl App {
     pub fn set_emails(&mut self, emails: Vec<Email>) {
         self.emails = emails;
         self.regroup();
+    }
+
+    /// Returns all emails (for thread lookups)
+    pub fn all_emails(&self) -> &[Email] {
+        &self.emails
     }
 
     /// Regroups emails according to the current group mode
@@ -111,24 +145,43 @@ impl App {
         self.regroup();
         self.selected_group = 0;
         self.selected_email = None;
+        self.selected_thread_email = None;
+    }
+
+    /// Selects the next item based on current view
+    pub fn select_next(&mut self) {
+        match self.view {
+            View::GroupList => self.select_next_group(),
+            View::EmailList => self.select_next_email(),
+            View::ThreadView => self.select_next_thread_email(),
+        }
+    }
+
+    /// Selects the previous item based on current view
+    pub fn select_previous(&mut self) {
+        match self.view {
+            View::GroupList => self.select_previous_group(),
+            View::EmailList => self.select_previous_email(),
+            View::ThreadView => self.select_previous_thread_email(),
+        }
     }
 
     /// Selects the next group in the list
-    pub fn select_next_group(&mut self) {
+    fn select_next_group(&mut self) {
         if !self.groups.is_empty() && self.selected_group < self.groups.len() - 1 {
             self.selected_group += 1;
         }
     }
 
     /// Selects the previous group in the list
-    pub fn select_previous_group(&mut self) {
+    fn select_previous_group(&mut self) {
         if self.selected_group > 0 {
             self.selected_group -= 1;
         }
     }
 
     /// Selects the next email in the current group
-    pub fn select_next_email(&mut self) {
+    fn select_next_email(&mut self) {
         if let Some(group) = self.groups.get(self.selected_group) {
             if group.emails.is_empty() {
                 return;
@@ -143,7 +196,7 @@ impl App {
     }
 
     /// Selects the previous email in the current group
-    pub fn select_previous_email(&mut self) {
+    fn select_previous_email(&mut self) {
         if self.groups.get(self.selected_group).is_some() {
             self.selected_email = match self.selected_email {
                 Some(idx) if idx > 0 => Some(idx - 1),
@@ -153,8 +206,49 @@ impl App {
         }
     }
 
+    /// Selects the next email in thread view
+    fn select_next_thread_email(&mut self) {
+        let thread_emails = self.current_thread_emails();
+        if thread_emails.is_empty() {
+            return;
+        }
+
+        self.selected_thread_email = match self.selected_thread_email {
+            Some(idx) if idx < thread_emails.len() - 1 => Some(idx + 1),
+            Some(idx) => Some(idx),
+            None => Some(0),
+        };
+    }
+
+    /// Selects the previous email in thread view
+    fn select_previous_thread_email(&mut self) {
+        self.selected_thread_email = match self.selected_thread_email {
+            Some(idx) if idx > 0 => Some(idx - 1),
+            Some(idx) => Some(idx),
+            None => None,
+        };
+    }
+
+    /// Enters the next view level (group -> emails -> thread)
+    pub fn enter(&mut self) {
+        match self.view {
+            View::GroupList => self.enter_group(),
+            View::EmailList => self.enter_thread(),
+            View::ThreadView => {} // Already at deepest level
+        }
+    }
+
+    /// Exits to the previous view level (thread -> emails -> group)
+    pub fn exit(&mut self) {
+        match self.view {
+            View::GroupList => {} // Can't go back, handled by main.rs for quit
+            View::EmailList => self.exit_to_groups(),
+            View::ThreadView => self.exit_to_emails(),
+        }
+    }
+
     /// Enters the email list view for the currently selected group
-    pub fn enter_group(&mut self) {
+    fn enter_group(&mut self) {
         if !self.groups.is_empty() {
             self.view = View::EmailList;
             self.selected_email = if self.groups[self.selected_group].emails.is_empty() {
@@ -166,9 +260,23 @@ impl App {
     }
 
     /// Returns to the group list view
-    pub fn exit_group(&mut self) {
+    fn exit_to_groups(&mut self) {
         self.view = View::GroupList;
         self.selected_email = None;
+    }
+
+    /// Enters the thread view for the currently selected email
+    fn enter_thread(&mut self) {
+        if self.current_email().is_some() {
+            self.view = View::ThreadView;
+            self.selected_thread_email = Some(0);
+        }
+    }
+
+    /// Returns to the email list view
+    fn exit_to_emails(&mut self) {
+        self.view = View::EmailList;
+        self.selected_thread_email = None;
     }
 
     /// Gets the currently selected group, if any
@@ -180,6 +288,134 @@ impl App {
     pub fn current_email(&self) -> Option<&Email> {
         self.current_group()
             .and_then(|g| self.selected_email.and_then(|idx| g.emails.get(idx)))
+    }
+
+    /// Gets all emails in the thread of the currently selected email
+    pub fn current_thread_emails(&self) -> Vec<&Email> {
+        let Some(current) = self.current_email() else {
+            return Vec::new();
+        };
+
+        let thread_id = &current.thread_id;
+        let mut thread_emails: Vec<&Email> = self
+            .emails
+            .iter()
+            .filter(|e| &e.thread_id == thread_id)
+            .collect();
+
+        // Sort by date
+        thread_emails.sort_by(|a, b| a.date.cmp(&b.date));
+        thread_emails
+    }
+
+    /// Gets the currently selected email in thread view
+    pub fn current_thread_email(&self) -> Option<&Email> {
+        let thread_emails = self.current_thread_emails();
+        self.selected_thread_email
+            .and_then(|idx| thread_emails.get(idx).copied())
+    }
+
+    /// Checks if a thread has emails from multiple senders
+    pub fn thread_has_multiple_senders(&self, thread_id: &str) -> bool {
+        let senders: HashSet<&str> = self
+            .emails
+            .iter()
+            .filter(|e| e.thread_id == thread_id)
+            .map(|e| e.from_email.as_str())
+            .collect();
+        senders.len() > 1
+    }
+
+    /// Gets the thread IDs for emails in the current group
+    pub fn current_group_thread_ids(&self) -> HashSet<String> {
+        self.current_group()
+            .map(|g| g.emails.iter().map(|e| e.thread_id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Calculates the impact of archiving/deleting all emails in the current group
+    pub fn current_group_thread_impact(&self) -> ThreadImpact {
+        let Some(group) = self.current_group() else {
+            return ThreadImpact {
+                single_sender_threads: 0,
+                multi_sender_threads: 0,
+                other_sender_emails: 0,
+            };
+        };
+
+        let group_key = &group.key;
+        let thread_ids = self.current_group_thread_ids();
+
+        let mut single_sender_threads = 0;
+        let mut multi_sender_threads = 0;
+        let mut other_sender_emails = 0;
+
+        for thread_id in &thread_ids {
+            let thread_emails: Vec<&Email> = self
+                .emails
+                .iter()
+                .filter(|e| &e.thread_id == thread_id)
+                .collect();
+
+            let senders: HashSet<&str> = thread_emails
+                .iter()
+                .map(|e| e.from_email.as_str())
+                .collect();
+
+            if senders.len() == 1 {
+                single_sender_threads += 1;
+            } else {
+                multi_sender_threads += 1;
+                // Count emails from other senders in this thread
+                other_sender_emails += thread_emails
+                    .iter()
+                    .filter(|e| {
+                        let key = match self.group_mode {
+                            GroupMode::ByEmail => &e.from_email,
+                            GroupMode::ByDomain => &e.from_domain,
+                        };
+                        key != group_key
+                    })
+                    .count();
+            }
+        }
+
+        ThreadImpact {
+            single_sender_threads,
+            multi_sender_threads,
+            other_sender_emails,
+        }
+    }
+
+    /// Calculates the impact of archiving/deleting the currently selected email
+    pub fn current_email_thread_impact(&self) -> ThreadImpact {
+        let Some(email) = self.current_email() else {
+            return ThreadImpact {
+                single_sender_threads: 0,
+                multi_sender_threads: 0,
+                other_sender_emails: 0,
+            };
+        };
+
+        if self.thread_has_multiple_senders(&email.thread_id) {
+            let other_count = self
+                .emails
+                .iter()
+                .filter(|e| e.thread_id == email.thread_id && e.from_email != email.from_email)
+                .count();
+
+            ThreadImpact {
+                single_sender_threads: 0,
+                multi_sender_threads: 1,
+                other_sender_emails: other_count,
+            }
+        } else {
+            ThreadImpact {
+                single_sender_threads: 1,
+                multi_sender_threads: 0,
+                other_sender_emails: 0,
+            }
+        }
     }
 
     /// Removes an email by ID and regroups
@@ -201,7 +437,27 @@ impl App {
         }
     }
 
-    /// Removes all emails in the current group
+    /// Removes all emails in a thread by thread ID
+    pub fn remove_thread(&mut self, thread_id: &str) {
+        self.emails.retain(|e| e.thread_id != thread_id);
+        self.regroup();
+
+        // Adjust selections
+        if let Some(group) = self.groups.get(self.selected_group) {
+            if let Some(idx) = self.selected_email {
+                if idx >= group.emails.len() {
+                    self.selected_email = if group.emails.is_empty() {
+                        None
+                    } else {
+                        Some(group.emails.len() - 1)
+                    };
+                }
+            }
+        }
+        self.selected_thread_email = None;
+    }
+
+    /// Removes all emails in the current group (only emails from this sender)
     pub fn remove_current_group_emails(&mut self) {
         if let Some(group) = self.groups.get(self.selected_group) {
             let ids_to_remove: Vec<String> = group.emails.iter().map(|e| e.id.clone()).collect();
@@ -214,6 +470,45 @@ impl App {
         if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
             self.selected_group = self.groups.len() - 1;
         }
+    }
+
+    /// Removes all emails in threads that contain emails from the current group
+    /// This affects ALL emails in those threads, including from other senders
+    pub fn remove_current_group_threads(&mut self) {
+        let thread_ids = self.current_group_thread_ids();
+        self.emails.retain(|e| !thread_ids.contains(&e.thread_id));
+        self.regroup();
+        self.selected_email = None;
+        self.selected_thread_email = None;
+
+        if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
+            self.selected_group = self.groups.len() - 1;
+        }
+    }
+
+    /// Gets all email IDs in the current group
+    pub fn current_group_email_ids(&self) -> Vec<String> {
+        self.current_group()
+            .map(|g| g.emails.iter().map(|e| e.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Gets all email IDs in threads that contain emails from the current group
+    pub fn current_group_thread_email_ids(&self) -> Vec<String> {
+        let thread_ids = self.current_group_thread_ids();
+        self.emails
+            .iter()
+            .filter(|e| thread_ids.contains(&e.thread_id))
+            .map(|e| e.id.clone())
+            .collect()
+    }
+
+    /// Gets all email IDs in the current thread
+    pub fn current_thread_email_ids(&self) -> Vec<String> {
+        self.current_thread_emails()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect()
     }
 }
 
@@ -233,6 +528,17 @@ mod tests {
         )
     }
 
+    fn create_test_email_with_thread(id: &str, thread_id: &str, from: &str) -> Email {
+        Email::new(
+            id.to_string(),
+            thread_id.to_string(),
+            from.to_string(),
+            "Subject".to_string(),
+            "Snippet".to_string(),
+            Utc::now(),
+        )
+    }
+
     #[test]
     fn test_app_default_state() {
         let app = App::new();
@@ -240,6 +546,7 @@ mod tests {
         assert_eq!(app.view, View::GroupList);
         assert_eq!(app.selected_group, 0);
         assert_eq!(app.selected_email, None);
+        assert_eq!(app.selected_thread_email, None);
         assert!(app.groups.is_empty());
     }
 
@@ -254,12 +561,10 @@ mod tests {
 
         assert_eq!(app.groups.len(), 2);
 
-        // Find alice's group (should have 2 emails)
         let alice_group = app.groups.iter().find(|g| g.key == "alice@example.com");
         assert!(alice_group.is_some());
         assert_eq!(alice_group.unwrap().count(), 2);
 
-        // Find bob's group (should have 1 email)
         let bob_group = app.groups.iter().find(|g| g.key == "bob@example.com");
         assert!(bob_group.is_some());
         assert_eq!(bob_group.unwrap().count(), 1);
@@ -277,7 +582,6 @@ mod tests {
 
         assert_eq!(app.groups.len(), 2);
 
-        // example.com should have 2 emails
         let example_group = app.groups.iter().find(|g| g.key == "example.com");
         assert!(example_group.is_some());
         assert_eq!(example_group.unwrap().count(), 2);
@@ -306,25 +610,23 @@ mod tests {
 
         assert_eq!(app.selected_group, 0);
 
-        app.select_next_group();
+        app.select_next();
         assert_eq!(app.selected_group, 1);
 
-        app.select_next_group();
+        app.select_next();
         assert_eq!(app.selected_group, 2);
 
-        // Should not go beyond bounds
-        app.select_next_group();
-        assert_eq!(app.selected_group, 2);
+        app.select_next();
+        assert_eq!(app.selected_group, 2); // Bounds check
 
-        app.select_previous_group();
+        app.select_previous();
         assert_eq!(app.selected_group, 1);
 
-        app.select_previous_group();
+        app.select_previous();
         assert_eq!(app.selected_group, 0);
 
-        // Should not go below 0
-        app.select_previous_group();
-        assert_eq!(app.selected_group, 0);
+        app.select_previous();
+        assert_eq!(app.selected_group, 0); // Bounds check
     }
 
     #[test]
@@ -336,102 +638,189 @@ mod tests {
             create_test_email("3", "alice@example.com"),
         ]);
 
-        // Enter the group
-        app.enter_group();
+        app.enter();
         assert_eq!(app.view, View::EmailList);
         assert_eq!(app.selected_email, Some(0));
 
-        app.select_next_email();
+        app.select_next();
         assert_eq!(app.selected_email, Some(1));
 
-        app.select_next_email();
+        app.select_next();
         assert_eq!(app.selected_email, Some(2));
 
-        // Should not go beyond bounds
-        app.select_next_email();
-        assert_eq!(app.selected_email, Some(2));
+        app.select_next();
+        assert_eq!(app.selected_email, Some(2)); // Bounds check
 
-        app.select_previous_email();
+        app.select_previous();
         assert_eq!(app.selected_email, Some(1));
-
-        app.select_previous_email();
-        assert_eq!(app.selected_email, Some(0));
-
-        // Should not go below 0
-        app.select_previous_email();
-        assert_eq!(app.selected_email, Some(0));
     }
 
     #[test]
-    fn test_enter_and_exit_group() {
+    fn test_three_level_navigation() {
         let mut app = App::new();
-        app.set_emails(vec![create_test_email("1", "alice@example.com")]);
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+        ]);
 
+        // Start at group list
         assert_eq!(app.view, View::GroupList);
 
-        app.enter_group();
+        // Enter email list
+        app.enter();
         assert_eq!(app.view, View::EmailList);
-        assert_eq!(app.selected_email, Some(0));
 
-        app.exit_group();
+        // Enter thread view
+        app.enter();
+        assert_eq!(app.view, View::ThreadView);
+        assert_eq!(app.selected_thread_email, Some(0));
+
+        // Navigate in thread
+        app.select_next();
+        assert_eq!(app.selected_thread_email, Some(1));
+
+        // Exit to email list
+        app.exit();
+        assert_eq!(app.view, View::EmailList);
+        assert_eq!(app.selected_thread_email, None);
+
+        // Exit to group list
+        app.exit();
         assert_eq!(app.view, View::GroupList);
-        assert_eq!(app.selected_email, None);
     }
 
     #[test]
-    fn test_current_group_and_email() {
+    fn test_thread_emails() {
         let mut app = App::new();
         app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
-            create_test_email("2", "alice@example.com"),
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            create_test_email_with_thread("3", "thread_b", "alice@example.com"),
         ]);
 
-        assert!(app.current_group().is_some());
-        assert!(app.current_email().is_none());
+        // Select alice's group and first email
+        let alice_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "alice@example.com")
+            .unwrap();
+        app.selected_group = alice_idx;
+        app.enter(); // Enter email list
+        app.selected_email = Some(0);
 
-        app.enter_group();
-        assert!(app.current_email().is_some());
-        assert_eq!(app.current_email().unwrap().id, app.groups[0].emails[0].id);
+        // Get thread emails - should include both alice and bob's emails in thread_a
+        let thread_emails = app.current_thread_emails();
+        assert_eq!(thread_emails.len(), 2);
     }
 
     #[test]
-    fn test_remove_email() {
+    fn test_thread_has_multiple_senders() {
         let mut app = App::new();
         app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
-            create_test_email("2", "alice@example.com"),
-            create_test_email("3", "bob@example.com"),
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            create_test_email_with_thread("3", "thread_b", "alice@example.com"),
         ]);
 
-        let initial_alice_count = app
+        assert!(app.thread_has_multiple_senders("thread_a"));
+        assert!(!app.thread_has_multiple_senders("thread_b"));
+    }
+
+    #[test]
+    fn test_thread_impact_single_sender() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
+        ]);
+
+        app.enter();
+        app.selected_email = Some(0);
+
+        let impact = app.current_email_thread_impact();
+        assert_eq!(impact.single_sender_threads, 1);
+        assert_eq!(impact.multi_sender_threads, 0);
+        assert_eq!(impact.other_sender_emails, 0);
+        assert!(!impact.has_other_senders());
+    }
+
+    #[test]
+    fn test_thread_impact_multiple_senders() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            create_test_email_with_thread("3", "thread_a", "charlie@example.com"),
+        ]);
+
+        // Select alice's group
+        let alice_idx = app
             .groups
             .iter()
-            .find(|g| g.key == "alice@example.com")
-            .map(|g| g.count())
-            .unwrap_or(0);
-        assert_eq!(initial_alice_count, 2);
+            .position(|g| g.key == "alice@example.com")
+            .unwrap();
+        app.selected_group = alice_idx;
+        app.enter();
+        app.selected_email = Some(0);
 
-        app.remove_email("1");
+        let impact = app.current_email_thread_impact();
+        assert_eq!(impact.single_sender_threads, 0);
+        assert_eq!(impact.multi_sender_threads, 1);
+        assert_eq!(impact.other_sender_emails, 2); // bob and charlie
+        assert!(impact.has_other_senders());
+    }
 
-        let new_alice_count = app
+    #[test]
+    fn test_group_thread_impact() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Thread with only alice
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            // Thread with alice and bob
+            create_test_email_with_thread("2", "thread_b", "alice@example.com"),
+            create_test_email_with_thread("3", "thread_b", "bob@example.com"),
+        ]);
+
+        // Select alice's group
+        let alice_idx = app
             .groups
             .iter()
-            .find(|g| g.key == "alice@example.com")
-            .map(|g| g.count())
-            .unwrap_or(0);
-        assert_eq!(new_alice_count, 1);
+            .position(|g| g.key == "alice@example.com")
+            .unwrap();
+        app.selected_group = alice_idx;
+
+        let impact = app.current_group_thread_impact();
+        assert_eq!(impact.single_sender_threads, 1);
+        assert_eq!(impact.multi_sender_threads, 1);
+        assert_eq!(impact.other_sender_emails, 1); // bob's email
+    }
+
+    #[test]
+    fn test_remove_thread() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            create_test_email_with_thread("3", "thread_b", "alice@example.com"),
+        ]);
+
+        assert_eq!(app.emails.len(), 3);
+
+        app.remove_thread("thread_a");
+
+        assert_eq!(app.emails.len(), 1);
+        assert_eq!(app.emails[0].id, "3");
     }
 
     #[test]
     fn test_remove_current_group_emails() {
         let mut app = App::new();
         app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
-            create_test_email("2", "alice@example.com"),
-            create_test_email("3", "bob@example.com"),
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            create_test_email_with_thread("3", "thread_b", "alice@example.com"),
         ]);
 
-        // Select the group with the most emails (alice)
         let alice_idx = app
             .groups
             .iter()
@@ -441,19 +830,32 @@ mod tests {
 
         app.remove_current_group_emails();
 
-        // Alice's group should be gone
-        assert!(app
-            .groups
-            .iter()
-            .find(|g| g.key == "alice@example.com")
-            .is_none());
+        // Only bob's email should remain
+        assert_eq!(app.emails.len(), 1);
+        assert_eq!(app.emails[0].from_email, "bob@example.com");
+    }
 
-        // Bob's group should remain
-        assert!(app
+    #[test]
+    fn test_remove_current_group_threads() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            create_test_email_with_thread("3", "thread_b", "charlie@example.com"),
+        ]);
+
+        let alice_idx = app
             .groups
             .iter()
-            .find(|g| g.key == "bob@example.com")
-            .is_some());
+            .position(|g| g.key == "alice@example.com")
+            .unwrap();
+        app.selected_group = alice_idx;
+
+        app.remove_current_group_threads();
+
+        // thread_a is removed entirely (including bob), only charlie remains
+        assert_eq!(app.emails.len(), 1);
+        assert_eq!(app.emails[0].from_email, "charlie@example.com");
     }
 
     #[test]
@@ -467,8 +869,21 @@ mod tests {
             create_test_email("4", "alice@example.com"),
         ]);
 
-        // Groups should be sorted by count descending
         assert_eq!(app.groups[0].count(), 3); // alice
         assert_eq!(app.groups[1].count(), 1); // bob
+    }
+
+    #[test]
+    fn test_group_thread_count() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("3", "thread_b", "alice@example.com"),
+        ]);
+
+        let alice_group = app.groups.iter().find(|g| g.key == "alice@example.com").unwrap();
+        assert_eq!(alice_group.count(), 3); // 3 emails
+        assert_eq!(alice_group.thread_count(), 2); // 2 threads
     }
 }

@@ -5,7 +5,7 @@ use ratatui::{
 
 use crate::app::{App, View};
 use crate::ui::widgets::{
-    ConfirmDialogWidget, EmailListWidget, GroupListWidget, HelpBarWidget, UiState,
+    ConfirmDialogWidget, EmailListWidget, GroupListWidget, HelpBarWidget, ThreadViewWidget, UiState,
 };
 
 /// Renders the entire application UI
@@ -28,6 +28,10 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &UiState) {
             let widget = EmailListWidget::new(app);
             frame.render_widget(widget, chunks[0]);
         }
+        View::ThreadView => {
+            let widget = ThreadViewWidget::new(app);
+            frame.render_widget(widget, chunks[0]);
+        }
     }
 
     // Render help bar
@@ -36,7 +40,7 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &UiState) {
 
     // Render confirmation dialog if active
     if let Some(action) = &ui_state.confirm_action {
-        let dialog_area = centered_rect(60, 20, frame.area());
+        let dialog_area = centered_rect(60, 30, frame.area());
         let dialog = ConfirmDialogWidget::new(action);
         frame.render_widget(dialog, dialog_area);
     }

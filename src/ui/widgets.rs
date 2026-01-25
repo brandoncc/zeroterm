@@ -6,23 +6,71 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::app::{App, View};
+use crate::app::{App, GroupMode, ThreadImpact, View};
 
 /// State for the confirmation dialog
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmAction {
-    ArchiveAll { sender: String, count: usize },
-    DeleteAll { sender: String, count: usize },
+    /// Archive emails from a sender (only their emails, not full threads)
+    ArchiveEmails {
+        sender: String,
+        count: usize,
+        impact: ThreadImpact,
+    },
+    /// Delete emails from a sender (only their emails, not full threads)
+    DeleteEmails {
+        sender: String,
+        count: usize,
+        impact: ThreadImpact,
+    },
+    /// Archive entire thread (all emails including other senders)
+    ArchiveThread {
+        thread_email_count: usize,
+    },
+    /// Delete entire thread (all emails including other senders)
+    DeleteThread {
+        thread_email_count: usize,
+    },
 }
 
 impl ConfirmAction {
-    pub fn message(&self) -> String {
+    pub fn message(&self) -> Vec<String> {
         match self {
-            ConfirmAction::ArchiveAll { sender, count } => {
-                format!("Archive {} emails from {}? (y/n)", count, sender)
+            ConfirmAction::ArchiveEmails { sender, count, impact } => {
+                let mut lines = vec![format!("Archive {} email(s) from {}?", count, sender)];
+                if impact.has_other_senders() {
+                    lines.push(format!(
+                        "⚠ {} thread(s) also contain {} email(s) from other senders",
+                        impact.multi_sender_threads, impact.other_sender_emails
+                    ));
+                    lines.push("(only emails from this sender will be archived)".to_string());
+                }
+                lines.push("(y/n)".to_string());
+                lines
             }
-            ConfirmAction::DeleteAll { sender, count } => {
-                format!("Delete {} emails from {}? (y/n)", count, sender)
+            ConfirmAction::DeleteEmails { sender, count, impact } => {
+                let mut lines = vec![format!("Delete {} email(s) from {}?", count, sender)];
+                if impact.has_other_senders() {
+                    lines.push(format!(
+                        "⚠ {} thread(s) also contain {} email(s) from other senders",
+                        impact.multi_sender_threads, impact.other_sender_emails
+                    ));
+                    lines.push("(only emails from this sender will be deleted)".to_string());
+                }
+                lines.push("(y/n)".to_string());
+                lines
+            }
+            ConfirmAction::ArchiveThread { thread_email_count } => {
+                vec![
+                    format!("Archive entire thread ({} email(s))?", thread_email_count),
+                    "(y/n)".to_string(),
+                ]
+            }
+            ConfirmAction::DeleteThread { thread_email_count } => {
+                vec![
+                    format!("Delete entire thread ({} email(s))?", thread_email_count),
+                    "(y/n)".to_string(),
+                ]
             }
         }
     }
@@ -74,9 +122,14 @@ impl<'a> GroupListWidget<'a> {
 
 impl Widget for GroupListWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let mode_str = match self.app.group_mode {
+            GroupMode::ByEmail => "email",
+            GroupMode::ByDomain => "domain",
+        };
+        let title = format!(" Senders (by {}) ", mode_str);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Senders (by email) ");
+            .title(title);
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -94,7 +147,14 @@ impl Widget for GroupListWidget<'_> {
                 Style::default()
             };
 
-            let line = format!("{} ({})", group.key, group.count());
+            let thread_count = group.thread_count();
+            let email_count = group.count();
+            let line = if thread_count == email_count {
+                // Each email is its own thread
+                format!("{} ({} emails)", group.key, email_count)
+            } else {
+                format!("{} ({} emails in {} threads)", group.key, email_count, thread_count)
+            };
             let span = Span::styled(line, style);
 
             buf.set_line(
@@ -138,6 +198,8 @@ impl Widget for EmailListWidget<'_> {
                 }
 
                 let is_selected = self.app.selected_email == Some(i);
+                let has_other_senders = self.app.thread_has_multiple_senders(&email.thread_id);
+
                 let style = if is_selected {
                     Style::default()
                         .fg(Color::Yellow)
@@ -146,7 +208,9 @@ impl Widget for EmailListWidget<'_> {
                     Style::default()
                 };
 
-                let line = format!("{}: {}", email.from_email, email.subject);
+                // Show indicator if thread has other senders
+                let thread_indicator = if has_other_senders { "◈ " } else { "  " };
+                let line = format!("{}{}", thread_indicator, email.subject);
                 let span = Span::styled(line, style);
 
                 buf.set_line(
@@ -156,6 +220,64 @@ impl Widget for EmailListWidget<'_> {
                     inner.width,
                 );
             }
+        }
+    }
+}
+
+/// Widget for rendering the thread view (all emails in a thread)
+pub struct ThreadViewWidget<'a> {
+    app: &'a App,
+}
+
+impl<'a> ThreadViewWidget<'a> {
+    pub fn new(app: &'a App) -> Self {
+        Self { app }
+    }
+}
+
+impl Widget for ThreadViewWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let title = self
+            .app
+            .current_email()
+            .map(|e| format!(" Thread: {} ", e.subject))
+            .unwrap_or_else(|| " Thread ".to_string());
+
+        let block = Block::default().borders(Borders::ALL).title(title);
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let thread_emails = self.app.current_thread_emails();
+        let current_sender = self.app.current_email().map(|e| &e.from_email);
+
+        for (i, email) in thread_emails.iter().enumerate() {
+            if i >= inner.height as usize {
+                break;
+            }
+
+            let is_selected = self.app.selected_thread_email == Some(i);
+            let is_other_sender = current_sender.is_some_and(|s| s != &email.from_email);
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_other_sender {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+
+            let line = format!("{}: {}", email.from_email, email.subject);
+            let span = Span::styled(line, style);
+
+            buf.set_line(
+                inner.x,
+                inner.y + i as u16,
+                &Line::from(span),
+                inner.width,
+            );
         }
     }
 }
@@ -178,7 +300,10 @@ impl Widget for HelpBarWidget<'_> {
                 "j/↓: next | k/↑: prev | Enter: open | A: archive all | D: delete all | g: toggle mode | r: refresh | q: quit"
             }
             View::EmailList => {
-                "j/↓: next | k/↑: prev | a: archive | A: archive all | d: delete | D: delete all | g: toggle mode | r: refresh | q: back"
+                "j/↓: next | k/↑: prev | Enter: view thread | a: archive | A: archive all | d: delete | D: delete all | g: toggle | q: back"
+            }
+            View::ThreadView => {
+                "j/↓: next | k/↑: prev | a: archive thread | d: delete thread | q: back"
             }
         };
 
@@ -210,40 +335,76 @@ impl Widget for ConfirmDialogWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let message = self.action.message();
-        let paragraph = Paragraph::new(message)
-            .style(Style::default().fg(Color::White));
+        let lines = self.action.message();
+        for (i, line) in lines.iter().enumerate() {
+            if i >= inner.height as usize {
+                break;
+            }
 
-        paragraph.render(inner, buf);
+            let style = if line.starts_with('⚠') {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            buf.set_line(
+                inner.x,
+                inner.y + i as u16,
+                &Line::from(Span::styled(line.clone(), style)),
+                inner.width,
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ThreadImpact;
 
     #[test]
-    fn test_confirm_action_archive_message() {
-        let action = ConfirmAction::ArchiveAll {
+    fn test_confirm_action_archive_no_impact() {
+        let action = ConfirmAction::ArchiveEmails {
             sender: "test@example.com".to_string(),
             count: 5,
+            impact: ThreadImpact {
+                single_sender_threads: 5,
+                multi_sender_threads: 0,
+                other_sender_emails: 0,
+            },
         };
-        assert_eq!(
-            action.message(),
-            "Archive 5 emails from test@example.com? (y/n)"
-        );
+        let lines = action.message();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Archive 5 email(s)"));
+        assert!(!lines.iter().any(|l| l.contains("⚠")));
     }
 
     #[test]
-    fn test_confirm_action_delete_message() {
-        let action = ConfirmAction::DeleteAll {
+    fn test_confirm_action_archive_with_impact() {
+        let action = ConfirmAction::ArchiveEmails {
             sender: "test@example.com".to_string(),
-            count: 3,
+            count: 5,
+            impact: ThreadImpact {
+                single_sender_threads: 3,
+                multi_sender_threads: 2,
+                other_sender_emails: 4,
+            },
         };
-        assert_eq!(
-            action.message(),
-            "Delete 3 emails from test@example.com? (y/n)"
-        );
+        let lines = action.message();
+        assert!(lines.len() > 2);
+        assert!(lines.iter().any(|l| l.contains("⚠")));
+        assert!(lines.iter().any(|l| l.contains("2 thread(s)")));
+        assert!(lines.iter().any(|l| l.contains("4 email(s) from other")));
+    }
+
+    #[test]
+    fn test_confirm_action_delete_thread() {
+        let action = ConfirmAction::DeleteThread {
+            thread_email_count: 3,
+        };
+        let lines = action.message();
+        assert!(lines[0].contains("Delete entire thread"));
+        assert!(lines[0].contains("3 email(s)"));
     }
 
     #[test]
@@ -251,9 +412,8 @@ mod tests {
         let mut state = UiState::new();
         assert!(!state.is_confirming());
 
-        state.set_confirm(ConfirmAction::ArchiveAll {
-            sender: "test@example.com".to_string(),
-            count: 1,
+        state.set_confirm(ConfirmAction::ArchiveThread {
+            thread_email_count: 1,
         });
         assert!(state.is_confirming());
 

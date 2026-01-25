@@ -18,8 +18,8 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use app::{App, View};
 use auth::create_authenticator;
 use gmail::{GmailClient, RealGmailClient};
-use ui::widgets::{ConfirmAction, UiState};
 use ui::render::render;
+use ui::widgets::{ConfirmAction, UiState};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -97,24 +97,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         if let Some(action) = ui_state.confirm_action.take() {
-                            match action {
-                                ConfirmAction::ArchiveAll { .. } => {
-                                    if let Some(group) = app.current_group() {
-                                        for email in &group.emails.clone() {
-                                            client.archive_email(&email.id).await?;
-                                        }
-                                    }
-                                    app.remove_current_group_emails();
-                                }
-                                ConfirmAction::DeleteAll { .. } => {
-                                    if let Some(group) = app.current_group() {
-                                        for email in &group.emails.clone() {
-                                            client.delete_email(&email.id).await?;
-                                        }
-                                    }
-                                    app.remove_current_group_emails();
-                                }
-                            }
+                            handle_confirmed_action(&mut app, &client, action).await?;
                         }
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -128,24 +111,20 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
             // Normal input handling
             match key.code {
                 KeyCode::Char('q') => {
-                    if app.view == View::EmailList {
-                        app.exit_group();
-                    } else {
+                    if app.view == View::GroupList {
                         break;
+                    } else {
+                        app.exit();
                     }
                 }
-                KeyCode::Char('j') | KeyCode::Down => match app.view {
-                    View::GroupList => app.select_next_group(),
-                    View::EmailList => app.select_next_email(),
-                },
-                KeyCode::Char('k') | KeyCode::Up => match app.view {
-                    View::GroupList => app.select_previous_group(),
-                    View::EmailList => app.select_previous_email(),
-                },
+                KeyCode::Char('j') | KeyCode::Down => {
+                    app.select_next();
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.select_previous();
+                }
                 KeyCode::Enter => {
-                    if app.view == View::GroupList {
-                        app.enter_group();
-                    }
+                    app.enter();
                 }
                 KeyCode::Char('g') => {
                     app.toggle_group_mode();
@@ -158,41 +137,188 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                     ui_state.clear_status();
                 }
                 KeyCode::Char('a') => {
-                    if app.view == View::EmailList {
-                        if let Some(email) = app.current_email().cloned() {
-                            client.archive_email(&email.id).await?;
-                            app.remove_email(&email.id);
-                        }
-                    }
+                    handle_archive(&mut app, &client, &mut ui_state).await?;
                 }
                 KeyCode::Char('A') => {
-                    if let Some(group) = app.current_group() {
-                        ui_state.set_confirm(ConfirmAction::ArchiveAll {
-                            sender: group.key.clone(),
-                            count: group.count(),
-                        });
-                    }
+                    handle_archive_all(&app, &mut ui_state);
                 }
                 KeyCode::Char('d') => {
-                    if app.view == View::EmailList {
-                        if let Some(email) = app.current_email().cloned() {
-                            client.delete_email(&email.id).await?;
-                            app.remove_email(&email.id);
-                        }
-                    }
+                    handle_delete(&mut app, &client, &mut ui_state).await?;
                 }
                 KeyCode::Char('D') => {
-                    if let Some(group) = app.current_group() {
-                        ui_state.set_confirm(ConfirmAction::DeleteAll {
-                            sender: group.key.clone(),
-                            count: group.count(),
-                        });
-                    }
+                    handle_delete_all(&app, &mut ui_state);
                 }
                 _ => {}
             }
         }
     }
 
+    Ok(())
+}
+
+/// Handles the 'a' key - archive single email or thread
+async fn handle_archive(
+    app: &mut App,
+    client: &RealGmailClient,
+    ui_state: &mut UiState,
+) -> Result<()> {
+    match app.view {
+        View::GroupList => {
+            // No action on single 'a' in group list
+        }
+        View::EmailList => {
+            // Archive single email (only this sender's email)
+            if let Some(email) = app.current_email().cloned() {
+                client.archive_email(&email.id).await?;
+                app.remove_email(&email.id);
+            }
+        }
+        View::ThreadView => {
+            // In thread view, 'a' archives the entire thread
+            let thread_count = app.current_thread_emails().len();
+            if thread_count > 0 {
+                ui_state.set_confirm(ConfirmAction::ArchiveThread {
+                    thread_email_count: thread_count,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handles the 'A' key - archive all in group
+fn handle_archive_all(app: &App, ui_state: &mut UiState) {
+    match app.view {
+        View::GroupList | View::EmailList => {
+            if let Some(group) = app.current_group() {
+                let impact = app.current_group_thread_impact();
+                ui_state.set_confirm(ConfirmAction::ArchiveEmails {
+                    sender: group.key.clone(),
+                    count: group.count(),
+                    impact,
+                });
+            }
+        }
+        View::ThreadView => {
+            // In thread view, 'A' also archives the thread
+            let thread_count = app.current_thread_emails().len();
+            if thread_count > 0 {
+                ui_state.set_confirm(ConfirmAction::ArchiveThread {
+                    thread_email_count: thread_count,
+                });
+            }
+        }
+    }
+}
+
+/// Handles the 'd' key - delete single email or thread
+async fn handle_delete(
+    app: &mut App,
+    client: &RealGmailClient,
+    ui_state: &mut UiState,
+) -> Result<()> {
+    match app.view {
+        View::GroupList => {
+            // No action on single 'd' in group list
+        }
+        View::EmailList => {
+            // Delete single email (only this sender's email)
+            if let Some(email) = app.current_email().cloned() {
+                client.delete_email(&email.id).await?;
+                app.remove_email(&email.id);
+            }
+        }
+        View::ThreadView => {
+            // In thread view, 'd' deletes the entire thread
+            let thread_count = app.current_thread_emails().len();
+            if thread_count > 0 {
+                ui_state.set_confirm(ConfirmAction::DeleteThread {
+                    thread_email_count: thread_count,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handles the 'D' key - delete all in group
+fn handle_delete_all(app: &App, ui_state: &mut UiState) {
+    match app.view {
+        View::GroupList | View::EmailList => {
+            if let Some(group) = app.current_group() {
+                let impact = app.current_group_thread_impact();
+                ui_state.set_confirm(ConfirmAction::DeleteEmails {
+                    sender: group.key.clone(),
+                    count: group.count(),
+                    impact,
+                });
+            }
+        }
+        View::ThreadView => {
+            // In thread view, 'D' also deletes the thread
+            let thread_count = app.current_thread_emails().len();
+            if thread_count > 0 {
+                ui_state.set_confirm(ConfirmAction::DeleteThread {
+                    thread_email_count: thread_count,
+                });
+            }
+        }
+    }
+}
+
+/// Handles a confirmed action
+async fn handle_confirmed_action(
+    app: &mut App,
+    client: &RealGmailClient,
+    action: ConfirmAction,
+) -> Result<()> {
+    match action {
+        ConfirmAction::ArchiveEmails { .. } => {
+            // Archive only this sender's emails (not full threads)
+            let email_ids = app.current_group_email_ids();
+            for id in &email_ids {
+                client.archive_email(id).await?;
+            }
+            app.remove_current_group_emails();
+        }
+        ConfirmAction::DeleteEmails { .. } => {
+            // Delete only this sender's emails (not full threads)
+            let email_ids = app.current_group_email_ids();
+            for id in &email_ids {
+                client.delete_email(id).await?;
+            }
+            app.remove_current_group_emails();
+        }
+        ConfirmAction::ArchiveThread { .. } => {
+            // Archive entire thread
+            let email_ids = app.current_thread_email_ids();
+            for id in &email_ids {
+                client.archive_email(id).await?;
+            }
+            if let Some(email) = app.current_email() {
+                let thread_id = email.thread_id.clone();
+                app.remove_thread(&thread_id);
+            }
+            // Return to email list if we were in thread view
+            if app.view == View::ThreadView {
+                app.exit();
+            }
+        }
+        ConfirmAction::DeleteThread { .. } => {
+            // Delete entire thread
+            let email_ids = app.current_thread_email_ids();
+            for id in &email_ids {
+                client.delete_email(id).await?;
+            }
+            if let Some(email) = app.current_email() {
+                let thread_id = email.thread_id.clone();
+                app.remove_thread(&thread_id);
+            }
+            // Return to email list if we were in thread view
+            if app.view == View::ThreadView {
+                app.exit();
+            }
+        }
+    }
     Ok(())
 }
