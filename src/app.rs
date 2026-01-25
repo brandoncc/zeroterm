@@ -459,11 +459,12 @@ mod tests {
     #[test]
     fn test_groups_sorted_by_count() {
         let mut app = App::new();
+        // Create bob first to verify sorting actually reorders groups
         app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
+            create_test_email("1", "bob@example.com"),
             create_test_email("2", "alice@example.com"),
             create_test_email("3", "alice@example.com"),
-            create_test_email("4", "bob@example.com"),
+            create_test_email("4", "alice@example.com"),
         ]);
 
         // Groups should be sorted by count descending
