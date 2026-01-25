@@ -8,6 +8,9 @@ use ratatui::{
 
 use crate::app::{App, GroupMode, ThreadImpact, View};
 
+/// Warning indicator character for messages
+const WARNING_CHAR: char = '⚠';
+
 /// State for the confirmation dialog
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmAction {
@@ -40,8 +43,8 @@ impl ConfirmAction {
                 let mut lines = vec![format!("Archive {} email(s) from {}?", count, sender)];
                 if impact.has_other_senders() {
                     lines.push(format!(
-                        "⚠ {} thread(s) also contain {} email(s) from other senders",
-                        impact.multi_sender_threads, impact.other_sender_emails
+                        "{} {} thread(s) also contain {} email(s) from other senders",
+                        WARNING_CHAR, impact.multi_sender_threads, impact.other_sender_emails
                     ));
                     lines.push("(only emails from this sender will be archived)".to_string());
                 }
@@ -52,8 +55,8 @@ impl ConfirmAction {
                 let mut lines = vec![format!("Delete {} email(s) from {}?", count, sender)];
                 if impact.has_other_senders() {
                     lines.push(format!(
-                        "⚠ {} thread(s) also contain {} email(s) from other senders",
-                        impact.multi_sender_threads, impact.other_sender_emails
+                        "{} {} thread(s) also contain {} email(s) from other senders",
+                        WARNING_CHAR, impact.multi_sender_threads, impact.other_sender_emails
                     ));
                     lines.push("(only emails from this sender will be deleted)".to_string());
                 }
@@ -341,7 +344,7 @@ impl Widget for ConfirmDialogWidget<'_> {
                 break;
             }
 
-            let style = if line.starts_with('⚠') {
+            let style = if line.starts_with(WARNING_CHAR) {
                 Style::default().fg(Color::Yellow)
             } else {
                 Style::default().fg(Color::White)
@@ -376,7 +379,7 @@ mod tests {
         let lines = action.message();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("Archive 5 email(s)"));
-        assert!(!lines.iter().any(|l| l.contains("⚠")));
+        assert!(!lines.iter().any(|l| l.contains(WARNING_CHAR)));
     }
 
     #[test]
@@ -392,7 +395,7 @@ mod tests {
         };
         let lines = action.message();
         assert!(lines.len() > 2);
-        assert!(lines.iter().any(|l| l.contains("⚠")));
+        assert!(lines.iter().any(|l| l.contains(WARNING_CHAR)));
         assert!(lines.iter().any(|l| l.contains("2 thread(s)")));
         assert!(lines.iter().any(|l| l.contains("4 email(s) from other")));
     }
