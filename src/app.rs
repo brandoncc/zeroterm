@@ -706,11 +706,23 @@ mod tests {
             .unwrap();
         app.selected_group = alice_idx;
         app.enter(); // Enter email list
-        app.selected_email = Some(0);
+
+        // Find the email from thread_a (could be at index 0 or 1 depending on order)
+        let thread_a_idx = app.current_group().unwrap().emails
+            .iter()
+            .position(|e| e.thread_id == "thread_a")
+            .unwrap();
+        app.selected_email = Some(thread_a_idx);
 
         // Get thread emails - should include both alice and bob's emails in thread_a
         let thread_emails = app.current_thread_emails();
         assert_eq!(thread_emails.len(), 2);
+
+        // Verify we got the correct emails (from thread_a, not thread_b)
+        let thread_ids: Vec<&str> = thread_emails.iter().map(|e| e.id.as_str()).collect();
+        assert!(thread_ids.contains(&"1"), "Should contain alice's email from thread_a");
+        assert!(thread_ids.contains(&"2"), "Should contain bob's email from thread_a");
+        assert!(!thread_ids.contains(&"3"), "Should not contain alice's email from thread_b");
     }
 
     #[test]
