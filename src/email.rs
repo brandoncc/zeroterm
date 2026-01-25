@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
+use std::collections::HashMap;
 
-/// Represents an email message from Gmail
+/// Represents an email message
 #[derive(Debug, Clone, PartialEq)]
 pub struct Email {
     pub id: String,
@@ -12,6 +13,10 @@ pub struct Email {
     pub subject: String,
     pub snippet: String,
     pub date: DateTime<Utc>,
+    /// The Message-ID header value
+    pub message_id: Option<String>,
+    /// The In-Reply-To header value (references parent message)
+    pub in_reply_to: Option<String>,
 }
 
 impl Email {
@@ -36,6 +41,35 @@ impl Email {
             subject,
             snippet,
             date,
+            message_id: None,
+            in_reply_to: None,
+        }
+    }
+
+    /// Creates a new Email with threading headers
+    pub fn with_headers(
+        id: String,
+        from: String,
+        subject: String,
+        snippet: String,
+        date: DateTime<Utc>,
+        message_id: Option<String>,
+        in_reply_to: Option<String>,
+    ) -> Self {
+        let from_email = extract_email(&from);
+        let from_domain = extract_domain(&from_email);
+
+        Self {
+            id,
+            thread_id: String::new(), // Will be set by build_thread_ids
+            from,
+            from_email,
+            from_domain,
+            subject,
+            snippet,
+            date,
+            message_id,
+            in_reply_to,
         }
     }
 }
@@ -60,6 +94,62 @@ pub fn extract_domain(email: &str) -> String {
         .nth(1)
         .unwrap_or(email)
         .to_string()
+}
+
+/// Builds thread IDs for a collection of emails using Message-ID and In-Reply-To headers.
+/// Uses a union-find algorithm to group connected emails into threads.
+pub fn build_thread_ids(emails: &mut [Email]) {
+    if emails.is_empty() {
+        return;
+    }
+
+    // Map Message-ID to email index
+    let mut msg_id_to_idx: HashMap<String, usize> = HashMap::new();
+    for (i, email) in emails.iter().enumerate() {
+        if let Some(ref msg_id) = email.message_id {
+            msg_id_to_idx.insert(msg_id.clone(), i);
+        }
+    }
+
+    // Union-find parent array
+    let mut parent: Vec<usize> = (0..emails.len()).collect();
+
+    // Union emails that are connected via In-Reply-To
+    for (i, email) in emails.iter().enumerate() {
+        if let Some(ref reply_to) = email.in_reply_to {
+            if let Some(&j) = msg_id_to_idx.get(reply_to) {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+
+    // Assign thread IDs based on root of each component
+    for i in 0..emails.len() {
+        let root = find(&parent, i);
+        emails[i].thread_id = format!("thread_{}", root);
+    }
+}
+
+/// Find operation for union-find with path compression
+fn find(parent: &[usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        i = parent[i];
+    }
+    i
+}
+
+/// Union operation for union-find
+fn union(parent: &mut [usize], i: usize, j: usize) {
+    let root_i = find(parent, i);
+    let root_j = find(parent, j);
+    if root_i != root_j {
+        // Always use the smaller index as root for consistency
+        if root_i < root_j {
+            parent[root_j] = root_i;
+        } else {
+            parent[root_i] = root_j;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -148,5 +238,121 @@ mod tests {
 
         assert_eq!(email.from_email, "noreply@service.io");
         assert_eq!(email.from_domain, "service.io");
+    }
+
+    #[test]
+    fn test_build_thread_ids_single_email() {
+        let date = Utc::now();
+        let mut emails = vec![
+            Email::with_headers(
+                "1".to_string(),
+                "alice@example.com".to_string(),
+                "Subject".to_string(),
+                "Snippet".to_string(),
+                date,
+                Some("<msg1@example.com>".to_string()),
+                None,
+            ),
+        ];
+
+        build_thread_ids(&mut emails);
+        assert_eq!(emails[0].thread_id, "thread_0");
+    }
+
+    #[test]
+    fn test_build_thread_ids_reply_chain() {
+        let date = Utc::now();
+        let mut emails = vec![
+            Email::with_headers(
+                "1".to_string(),
+                "alice@example.com".to_string(),
+                "Subject".to_string(),
+                "Original".to_string(),
+                date,
+                Some("<msg1@example.com>".to_string()),
+                None,
+            ),
+            Email::with_headers(
+                "2".to_string(),
+                "bob@example.com".to_string(),
+                "Re: Subject".to_string(),
+                "Reply".to_string(),
+                date,
+                Some("<msg2@example.com>".to_string()),
+                Some("<msg1@example.com>".to_string()),
+            ),
+        ];
+
+        build_thread_ids(&mut emails);
+        // Both should have the same thread ID
+        assert_eq!(emails[0].thread_id, emails[1].thread_id);
+    }
+
+    #[test]
+    fn test_build_thread_ids_separate_threads() {
+        let date = Utc::now();
+        let mut emails = vec![
+            Email::with_headers(
+                "1".to_string(),
+                "alice@example.com".to_string(),
+                "Subject A".to_string(),
+                "Email A".to_string(),
+                date,
+                Some("<msg1@example.com>".to_string()),
+                None,
+            ),
+            Email::with_headers(
+                "2".to_string(),
+                "bob@example.com".to_string(),
+                "Subject B".to_string(),
+                "Email B".to_string(),
+                date,
+                Some("<msg2@example.com>".to_string()),
+                None,
+            ),
+        ];
+
+        build_thread_ids(&mut emails);
+        // Should have different thread IDs
+        assert_ne!(emails[0].thread_id, emails[1].thread_id);
+    }
+
+    #[test]
+    fn test_build_thread_ids_three_email_chain() {
+        let date = Utc::now();
+        let mut emails = vec![
+            Email::with_headers(
+                "1".to_string(),
+                "alice@example.com".to_string(),
+                "Subject".to_string(),
+                "Original".to_string(),
+                date,
+                Some("<msg1@example.com>".to_string()),
+                None,
+            ),
+            Email::with_headers(
+                "2".to_string(),
+                "bob@example.com".to_string(),
+                "Re: Subject".to_string(),
+                "Reply 1".to_string(),
+                date,
+                Some("<msg2@example.com>".to_string()),
+                Some("<msg1@example.com>".to_string()),
+            ),
+            Email::with_headers(
+                "3".to_string(),
+                "alice@example.com".to_string(),
+                "Re: Subject".to_string(),
+                "Reply 2".to_string(),
+                date,
+                Some("<msg3@example.com>".to_string()),
+                Some("<msg2@example.com>".to_string()),
+            ),
+        ];
+
+        build_thread_ids(&mut emails);
+        // All three should have the same thread ID
+        assert_eq!(emails[0].thread_id, emails[1].thread_id);
+        assert_eq!(emails[1].thread_id, emails[2].thread_id);
     }
 }

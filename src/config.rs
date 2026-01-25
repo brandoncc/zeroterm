@@ -4,14 +4,15 @@ use std::fs;
 use std::path::PathBuf;
 
 const APP_NAME: &str = "zeroterm";
-const CREDENTIALS_FILE: &str = "credentials.json";
-const CLIENT_SECRET_FILE: &str = "client_secret.json";
+const CREDENTIALS_FILE: &str = "credentials.toml";
 
-/// Configuration for the application
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Config {
-    /// The path to the client secret file (OAuth2 credentials from Google)
-    pub client_secret_path: Option<PathBuf>,
+/// IMAP credentials for Gmail access
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Credentials {
+    /// Gmail email address
+    pub email: String,
+    /// Gmail App Password (not regular password)
+    pub app_password: String,
 }
 
 /// Returns the configuration directory path
@@ -21,14 +22,9 @@ pub fn config_dir() -> Result<PathBuf> {
         .context("Failed to determine config directory")
 }
 
-/// Returns the path to the credentials file (stored OAuth tokens)
+/// Returns the path to the credentials file
 pub fn credentials_path() -> Result<PathBuf> {
     config_dir().map(|p| p.join(CREDENTIALS_FILE))
-}
-
-/// Returns the path to the client secret file
-pub fn client_secret_path() -> Result<PathBuf> {
-    config_dir().map(|p| p.join(CLIENT_SECRET_FILE))
 }
 
 /// Ensures the config directory exists
@@ -40,18 +36,21 @@ pub fn ensure_config_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Checks if client secret file exists
-pub fn has_client_secret() -> bool {
-    client_secret_path()
-        .map(|p| p.exists())
-        .unwrap_or(false)
-}
-
-/// Checks if credentials (tokens) exist
+/// Checks if credentials file exists
 pub fn has_credentials() -> bool {
     credentials_path()
         .map(|p| p.exists())
         .unwrap_or(false)
+}
+
+/// Loads credentials from the config file
+pub fn load_credentials() -> Result<Credentials> {
+    let path = credentials_path()?;
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read credentials from {:?}", path))?;
+    let credentials: Credentials = toml::from_str(&content)
+        .context("Failed to parse credentials.toml")?;
+    Ok(credentials)
 }
 
 #[cfg(test)]
@@ -75,10 +74,13 @@ mod tests {
     }
 
     #[test]
-    fn test_client_secret_path() {
-        let path = client_secret_path();
-        assert!(path.is_ok());
-        let path = path.unwrap();
-        assert!(path.ends_with(CLIENT_SECRET_FILE));
+    fn test_parse_credentials() {
+        let toml_content = r#"
+email = "user@gmail.com"
+app_password = "xxxx xxxx xxxx xxxx"
+"#;
+        let credentials: Credentials = toml::from_str(toml_content).unwrap();
+        assert_eq!(credentials.email, "user@gmail.com");
+        assert_eq!(credentials.app_password, "xxxx xxxx xxxx xxxx");
     }
 }
