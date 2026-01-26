@@ -31,6 +31,9 @@ pub struct AccountConfig {
 pub struct Config {
     /// Named accounts, keyed by account name
     pub accounts: HashMap<String, AccountConfig>,
+    /// When true, archive/delete only work in thread view
+    #[serde(default)]
+    pub protect_threads: bool,
 }
 
 /// Returns the configuration directory path
@@ -123,6 +126,7 @@ pub fn load_config_with_resolver(resolver: &impl SecretResolver) -> Result<Confi
 
     Ok(Config {
         accounts: resolved_accounts,
+        protect_threads: config.protect_threads,
     })
 }
 
@@ -165,10 +169,37 @@ app_password = "xxxx xxxx xxxx xxxx"
 "#;
         let config: Config = toml::from_str(toml_content).unwrap();
         assert_eq!(config.accounts.len(), 1);
+        assert!(!config.protect_threads);
         let account = config.accounts.get("personal").unwrap();
         assert_eq!(account.backend, Backend::Gmail);
         assert_eq!(account.email, "user@gmail.com");
         assert_eq!(account.app_password, "xxxx xxxx xxxx xxxx");
+    }
+
+    #[test]
+    fn test_protect_threads_defaults_to_false() {
+        let toml_content = r#"
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert!(!config.protect_threads);
+    }
+
+    #[test]
+    fn test_protect_threads_can_be_enabled() {
+        let toml_content = r#"
+protect_threads = true
+
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert!(config.protect_threads);
     }
 
     #[test]

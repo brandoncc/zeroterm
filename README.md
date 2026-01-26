@@ -111,6 +111,21 @@ app_password = "op://Personal/Gmail App Password/password"
 
 Zeroterm will automatically call `op read` to resolve the secret.
 
+### Thread Protection Mode
+
+If you want to ensure you always review the full thread before archiving or deleting, enable thread protection:
+
+```toml
+protect_threads = true
+
+[accounts.personal]
+backend = "gmail"
+email = "you@gmail.com"
+app_password = "xxxx xxxx xxxx xxxx"
+```
+
+When enabled, archive and delete commands only work in the thread view. Attempting to use them in the group or email list views will display a message directing you to the thread view.
+
 ## Usage
 
 ```sh
