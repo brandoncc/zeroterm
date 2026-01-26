@@ -53,24 +53,6 @@ impl EmailGroup {
     }
 }
 
-/// Warning about threads with multiple participants
-#[derive(Debug, Clone, PartialEq)]
-pub enum ThreadWarning {
-    /// Sender email grouping mode: threads contain emails from other senders
-    SenderEmailMode {
-        thread_count: usize,
-        email_count: usize,
-    },
-    /// Domain grouping mode: threads have multiple participants
-    DomainMode { thread_count: usize },
-}
-
-/// Information about threads that would be affected by an action
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct ThreadImpact {
-    pub warning: Option<ThreadWarning>,
-}
-
 /// The main application state
 #[derive(Debug)]
 pub struct App {
@@ -81,10 +63,12 @@ pub struct App {
     pub selected_thread_email: Option<usize>,
     pub view: View,
     emails: Vec<Email>,
-    /// Cache of thread IDs that have multiple senders (for O(1) lookup)
-    multi_sender_threads: HashSet<String>,
+    /// Cache of thread IDs that have multiple messages (for O(1) lookup)
+    multi_message_threads: HashSet<String>,
     /// The user's email address (used to filter out sent emails from groups)
     user_email: Option<String>,
+    /// When true, only show emails that are part of multi-message threads
+    pub filter_to_threads: bool,
 }
 
 impl Default for App {
@@ -103,8 +87,9 @@ impl App {
             selected_thread_email: None,
             view: View::default(),
             emails: Vec::new(),
-            multi_sender_threads: HashSet::new(),
+            multi_message_threads: HashSet::new(),
             user_email: None,
+            filter_to_threads: false,
         }
     }
 
@@ -119,28 +104,25 @@ impl App {
         self.regroup();
     }
 
-    /// Rebuilds the cache of thread IDs with multiple senders
-    fn rebuild_multi_sender_cache(&mut self) {
-        // Build a map of thread_id -> set of senders
-        let mut thread_senders: HashMap<&str, HashSet<&str>> = HashMap::new();
+    /// Rebuilds the cache of thread IDs with multiple messages
+    fn rebuild_multi_message_cache(&mut self) {
+        // Count emails per thread_id
+        let mut thread_counts: HashMap<&str, usize> = HashMap::new();
         for email in &self.emails {
-            thread_senders
-                .entry(&email.thread_id)
-                .or_default()
-                .insert(&email.from_email);
+            *thread_counts.entry(&email.thread_id).or_default() += 1;
         }
 
-        // Collect thread IDs with more than one sender
-        self.multi_sender_threads = thread_senders
+        // Collect thread IDs with more than one email
+        self.multi_message_threads = thread_counts
             .into_iter()
-            .filter(|(_, senders)| senders.len() > 1)
+            .filter(|(_, count)| *count > 1)
             .map(|(thread_id, _)| thread_id.to_string())
             .collect();
     }
 
     /// Regroups emails according to the current group mode
     fn regroup(&mut self) {
-        self.rebuild_multi_sender_cache();
+        self.rebuild_multi_message_cache();
         let mut group_map: HashMap<String, Vec<Email>> = HashMap::new();
 
         for email in &self.emails {
@@ -227,14 +209,18 @@ impl App {
     pub fn select_first(&mut self) {
         match self.view {
             View::GroupList => {
-                self.selected_group = 0;
+                let filtered = self.filtered_groups();
+                if let Some(first) = filtered.first() {
+                    self.selected_group = self
+                        .groups
+                        .iter()
+                        .position(|g| g.key == first.key)
+                        .unwrap_or(0);
+                }
             }
             View::EmailList => {
-                if self
-                    .current_group()
-                    .map(|g| !g.threads().is_empty())
-                    .unwrap_or(false)
-                {
+                let filtered = self.filtered_threads_in_current_group();
+                if !filtered.is_empty() {
                     self.selected_email = Some(0);
                 }
             }
@@ -250,16 +236,19 @@ impl App {
     pub fn select_last(&mut self) {
         match self.view {
             View::GroupList => {
-                if !self.groups.is_empty() {
-                    self.selected_group = self.groups.len() - 1;
+                let filtered = self.filtered_groups();
+                if let Some(last) = filtered.last() {
+                    self.selected_group = self
+                        .groups
+                        .iter()
+                        .position(|g| g.key == last.key)
+                        .unwrap_or(0);
                 }
             }
             View::EmailList => {
-                if let Some(group) = self.current_group() {
-                    let threads = group.threads();
-                    if !threads.is_empty() {
-                        self.selected_email = Some(threads.len() - 1);
-                    }
+                let filtered = self.filtered_threads_in_current_group();
+                if !filtered.is_empty() {
+                    self.selected_email = Some(filtered.len() - 1);
                 }
             }
             View::Thread => {
@@ -273,32 +262,46 @@ impl App {
 
     /// Selects the next group in the list
     fn select_next_group(&mut self) {
-        if !self.groups.is_empty() && self.selected_group < self.groups.len() - 1 {
+        if self.filter_to_threads {
+            // Find next group that has multi-message threads
+            for i in (self.selected_group + 1)..self.groups.len() {
+                if self.group_has_multi_message_threads(&self.groups[i]) {
+                    self.selected_group = i;
+                    return;
+                }
+            }
+        } else if !self.groups.is_empty() && self.selected_group < self.groups.len() - 1 {
             self.selected_group += 1;
         }
     }
 
     /// Selects the previous group in the list
     fn select_previous_group(&mut self) {
-        if self.selected_group > 0 {
+        if self.filter_to_threads {
+            // Find previous group that has multi-message threads
+            for i in (0..self.selected_group).rev() {
+                if self.group_has_multi_message_threads(&self.groups[i]) {
+                    self.selected_group = i;
+                    return;
+                }
+            }
+        } else if self.selected_group > 0 {
             self.selected_group -= 1;
         }
     }
 
     /// Selects the next thread in the current group
     fn select_next_email(&mut self) {
-        if let Some(group) = self.groups.get(self.selected_group) {
-            let threads = group.threads();
-            if threads.is_empty() {
-                return;
-            }
-
-            self.selected_email = match self.selected_email {
-                Some(idx) if idx < threads.len() - 1 => Some(idx + 1),
-                Some(idx) => Some(idx),
-                None => Some(0),
-            };
+        let filtered = self.filtered_threads_in_current_group();
+        if filtered.is_empty() {
+            return;
         }
+
+        self.selected_email = match self.selected_email {
+            Some(idx) if idx < filtered.len() - 1 => Some(idx + 1),
+            Some(idx) => Some(idx),
+            None => Some(0),
+        };
     }
 
     /// Selects the previous email in the current group
@@ -417,24 +420,80 @@ impl App {
         thread_emails
     }
 
-    /// Checks if a thread has emails from multiple senders (O(1) lookup using cache)
-    pub fn thread_has_multiple_senders(&self, thread_id: &str) -> bool {
-        self.multi_sender_threads.contains(thread_id)
+    /// Checks if a thread has multiple messages (O(1) lookup using cache)
+    pub fn thread_has_multiple_messages(&self, thread_id: &str) -> bool {
+        self.multi_message_threads.contains(thread_id)
     }
 
-    /// Checks if any email in a group is part of a multi-sender thread
-    pub fn group_has_multi_sender_threads(&self, group: &EmailGroup) -> bool {
+    /// Checks if any email in a group is part of a multi-message thread
+    pub fn group_has_multi_message_threads(&self, group: &EmailGroup) -> bool {
         group
             .emails
             .iter()
-            .any(|email| self.thread_has_multiple_senders(&email.thread_id))
+            .any(|email| self.thread_has_multiple_messages(&email.thread_id))
     }
 
-    /// Gets the thread IDs for emails in the current group
-    pub fn current_group_thread_ids(&self) -> HashSet<String> {
-        self.current_group()
-            .map(|g| g.emails.iter().map(|e| e.thread_id.clone()).collect())
-            .unwrap_or_default()
+    /// Toggles the thread filter (only show emails in multi-message threads)
+    pub fn toggle_thread_filter(&mut self) {
+        self.filter_to_threads = !self.filter_to_threads;
+
+        if self.filter_to_threads {
+            // Only adjust group selection in GroupList view
+            if self.view == View::GroupList {
+                let filtered_groups = self.filtered_groups();
+                if !filtered_groups.is_empty() {
+                    let current_group = self.groups.get(self.selected_group);
+                    let still_visible = current_group
+                        .is_some_and(|g| filtered_groups.iter().any(|fg| fg.key == g.key));
+                    if !still_visible {
+                        // Find the index of the first visible group in the unfiltered list
+                        if let Some(first_visible) = filtered_groups.first() {
+                            self.selected_group = self
+                                .groups
+                                .iter()
+                                .position(|g| g.key == first_visible.key)
+                                .unwrap_or(0);
+                        }
+                    }
+                }
+            }
+
+            // Reset email selection if current email is filtered out
+            if let Some(idx) = self.selected_email {
+                let filtered = self.filtered_threads_in_current_group();
+                if idx >= filtered.len() {
+                    self.selected_email = if filtered.is_empty() { None } else { Some(0) };
+                }
+            }
+        }
+    }
+
+    /// Returns threads in the current group, filtered if filter_to_threads is active
+    pub fn filtered_threads_in_current_group(&self) -> Vec<&Email> {
+        let Some(group) = self.current_group() else {
+            return Vec::new();
+        };
+        if self.filter_to_threads {
+            group
+                .threads()
+                .into_iter()
+                .filter(|e| self.multi_message_threads.contains(&e.thread_id))
+                .collect()
+        } else {
+            group.threads()
+        }
+    }
+
+    /// Returns groups filtered if filter_to_threads is active (only groups with multi-message threads)
+    pub fn filtered_groups(&self) -> Vec<&EmailGroup> {
+        if self.filter_to_threads {
+            self.groups
+                .iter()
+                .filter(|g| self.group_has_multi_message_threads(g))
+                .collect()
+        } else {
+            self.groups.iter().collect()
+        }
     }
 
     /// Counts all emails across all threads that a group participates in
@@ -445,58 +504,6 @@ impl App {
             .iter()
             .filter(|e| thread_ids.contains(e.thread_id.as_str()))
             .count()
-    }
-
-    /// Calculates the impact of archiving/deleting all emails in the current group
-    pub fn current_group_thread_impact(&self) -> ThreadImpact {
-        let Some(group) = self.current_group() else {
-            return ThreadImpact::default();
-        };
-
-        let group_key = &group.key;
-        let thread_ids = self.current_group_thread_ids();
-
-        let mut multi_sender_threads = 0;
-        let mut other_sender_emails = 0;
-
-        for thread_id in &thread_ids {
-            let thread_emails: Vec<&Email> = self
-                .emails
-                .iter()
-                .filter(|e| &e.thread_id == thread_id)
-                .collect();
-
-            let senders: HashSet<&str> = thread_emails
-                .iter()
-                .map(|e| e.from_email.as_str())
-                .collect();
-
-            if senders.len() > 1 {
-                multi_sender_threads += 1;
-                if self.group_mode == GroupMode::BySenderEmail {
-                    other_sender_emails += thread_emails
-                        .iter()
-                        .filter(|e| &e.from_email != group_key)
-                        .count();
-                }
-            }
-        }
-
-        let warning = if multi_sender_threads > 0 {
-            Some(match self.group_mode {
-                GroupMode::BySenderEmail => ThreadWarning::SenderEmailMode {
-                    thread_count: multi_sender_threads,
-                    email_count: other_sender_emails,
-                },
-                GroupMode::ByDomain => ThreadWarning::DomainMode {
-                    thread_count: multi_sender_threads,
-                },
-            })
-        } else {
-            None
-        };
-
-        ThreadImpact { warning }
     }
 
     /// Removes an email by ID and regroups
@@ -585,28 +592,11 @@ impl App {
 
 #[cfg(test)]
 impl App {
-    /// Calculates the impact of archiving/deleting the currently selected email
-    pub fn current_email_thread_impact(&self) -> ThreadImpact {
-        let Some(email) = self.current_email() else {
-            return ThreadImpact::default();
-        };
-
-        if self.thread_has_multiple_senders(&email.thread_id) {
-            let other_count = self
-                .emails
-                .iter()
-                .filter(|e| e.thread_id == email.thread_id && e.from_email != email.from_email)
-                .count();
-
-            ThreadImpact {
-                warning: Some(ThreadWarning::SenderEmailMode {
-                    thread_count: 1,
-                    email_count: other_count,
-                }),
-            }
-        } else {
-            ThreadImpact::default()
-        }
+    /// Gets the thread IDs for emails in the current group
+    fn current_group_thread_ids(&self) -> HashSet<String> {
+        self.current_group()
+            .map(|g| g.emails.iter().map(|e| e.thread_id.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Removes all emails in threads that contain emails from the current group
@@ -915,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn test_thread_has_multiple_senders() {
+    fn test_thread_has_multiple_messages() {
         let mut app = App::new();
         app.set_emails(vec![
             create_test_email_with_thread("1", "thread_a", "alice@example.com"),
@@ -923,109 +913,10 @@ mod tests {
             create_test_email_with_thread("3", "thread_b", "alice@example.com"),
         ]);
 
-        assert!(app.thread_has_multiple_senders("thread_a"));
-        assert!(!app.thread_has_multiple_senders("thread_b"));
-    }
-
-    #[test]
-    fn test_thread_impact_single_sender() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
-            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
-        ]);
-
-        app.enter();
-        app.selected_email = Some(0);
-
-        let impact = app.current_email_thread_impact();
-        assert!(impact.warning.is_none());
-    }
-
-    #[test]
-    fn test_thread_impact_multiple_senders() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
-            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
-            create_test_email_with_thread("3", "thread_a", "charlie@example.com"),
-        ]);
-
-        // Select alice's group
-        let alice_idx = app
-            .groups
-            .iter()
-            .position(|g| g.key == "alice@example.com")
-            .unwrap();
-        app.selected_group = alice_idx;
-        app.enter();
-        app.selected_email = Some(0);
-
-        let impact = app.current_email_thread_impact();
-        assert_eq!(
-            impact.warning,
-            Some(ThreadWarning::SenderEmailMode {
-                thread_count: 1,
-                email_count: 2, // bob and charlie
-            })
-        );
-    }
-
-    #[test]
-    fn test_group_thread_impact_email_mode() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            // Thread with only alice
-            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
-            // Thread with alice and bob
-            create_test_email_with_thread("2", "thread_b", "alice@example.com"),
-            create_test_email_with_thread("3", "thread_b", "bob@example.com"),
-        ]);
-
-        // Select alice's group (email mode is default)
-        let alice_idx = app
-            .groups
-            .iter()
-            .position(|g| g.key == "alice@example.com")
-            .unwrap();
-        app.selected_group = alice_idx;
-
-        let impact = app.current_group_thread_impact();
-        assert_eq!(
-            impact.warning,
-            Some(ThreadWarning::SenderEmailMode {
-                thread_count: 1,
-                email_count: 1, // bob's email
-            })
-        );
-    }
-
-    #[test]
-    fn test_group_thread_impact_domain_mode() {
-        let mut app = App::new();
-        app.group_mode = GroupMode::ByDomain;
-        app.set_emails(vec![
-            // Thread with alice and bob (both @example.com)
-            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
-            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
-            // Single sender thread
-            create_test_email_with_thread("3", "thread_b", "charlie@example.com"),
-        ]);
-
-        // Select example.com group
-        let example_idx = app
-            .groups
-            .iter()
-            .position(|g| g.key == "example.com")
-            .unwrap();
-        app.selected_group = example_idx;
-
-        let impact = app.current_group_thread_impact();
-        // In domain mode, we warn about multi-participant threads
-        assert_eq!(
-            impact.warning,
-            Some(ThreadWarning::DomainMode { thread_count: 1 })
-        );
+        // thread_a has 2 messages
+        assert!(app.thread_has_multiple_messages("thread_a"));
+        // thread_b has only 1 message
+        assert!(!app.thread_has_multiple_messages("thread_b"));
     }
 
     #[test]
@@ -1148,13 +1039,13 @@ mod tests {
     }
 
     #[test]
-    fn test_group_has_multi_sender_threads() {
+    fn test_group_has_multi_message_threads() {
         let mut app = App::new();
         app.set_emails(vec![
-            // Thread with multiple senders
+            // Thread with multiple messages
             create_test_email_with_thread("1", "thread_a", "alice@example.com"),
             create_test_email_with_thread("2", "thread_a", "bob@example.com"),
-            // Thread with single sender
+            // Thread with single message
             create_test_email_with_thread("3", "thread_b", "charlie@example.com"),
         ]);
 
@@ -1163,13 +1054,68 @@ mod tests {
             .iter()
             .find(|g| g.key == "alice@example.com")
             .unwrap();
-        assert!(app.group_has_multi_sender_threads(alice_group));
+        assert!(app.group_has_multi_message_threads(alice_group));
 
         let charlie_group = app
             .groups
             .iter()
             .find(|g| g.key == "charlie@example.com")
             .unwrap();
-        assert!(!app.group_has_multi_sender_threads(charlie_group));
+        assert!(!app.group_has_multi_message_threads(charlie_group));
+    }
+
+    #[test]
+    fn test_toggle_thread_filter() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Multi-message thread
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
+            // Single-message thread
+            create_test_email_with_thread("3", "thread_b", "alice@example.com"),
+        ]);
+
+        app.enter(); // Enter email list
+        assert!(!app.filter_to_threads);
+
+        // Without filter, should see 2 threads
+        assert_eq!(app.filtered_threads_in_current_group().len(), 2);
+
+        // Toggle filter on
+        app.toggle_thread_filter();
+        assert!(app.filter_to_threads);
+
+        // With filter, should only see 1 thread (thread_a with multiple messages)
+        assert_eq!(app.filtered_threads_in_current_group().len(), 1);
+
+        // Toggle filter off
+        app.toggle_thread_filter();
+        assert!(!app.filter_to_threads);
+        assert_eq!(app.filtered_threads_in_current_group().len(), 2);
+    }
+
+    #[test]
+    fn test_filtered_groups() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Multi-message thread for alice
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
+            // Single-message thread for bob
+            create_test_email_with_thread("3", "thread_b", "bob@example.com"),
+            // Single-message thread for charlie
+            create_test_email_with_thread("4", "thread_c", "charlie@example.com"),
+        ]);
+
+        // Without filter, should see all 3 groups
+        assert_eq!(app.filtered_groups().len(), 3);
+
+        // Toggle filter on
+        app.toggle_thread_filter();
+
+        // With filter, should only see alice's group (has multi-message thread)
+        let filtered = app.filtered_groups();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].key, "alice@example.com");
     }
 }

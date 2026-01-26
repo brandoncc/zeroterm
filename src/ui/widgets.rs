@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Row, StatefulWidget, Table, TableState, Widget},
 };
 
-use crate::app::{App, GroupMode, ThreadImpact, ThreadWarning, View};
+use crate::app::{App, GroupMode, View};
 use crate::config::AccountConfig;
 
 /// Warning indicator character for messages
@@ -32,17 +32,9 @@ fn format_date(date: &DateTime<Utc>) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmAction {
     /// Archive emails from a sender (only their emails, not full threads)
-    ArchiveEmails {
-        sender: String,
-        count: usize,
-        impact: ThreadImpact,
-    },
+    ArchiveEmails { sender: String, count: usize },
     /// Delete emails from a sender (only their emails, not full threads)
-    DeleteEmails {
-        sender: String,
-        count: usize,
-        impact: ThreadImpact,
-    },
+    DeleteEmails { sender: String, count: usize },
     /// Archive entire thread (all emails including other senders)
     ArchiveThread { thread_email_count: usize },
     /// Delete entire thread (all emails including other senders)
@@ -52,66 +44,17 @@ pub enum ConfirmAction {
 impl ConfirmAction {
     pub fn message(&self) -> Vec<String> {
         match self {
-            ConfirmAction::ArchiveEmails {
-                sender,
-                count,
-                impact,
-            } => {
-                let mut lines = vec![format!("Archive {} email(s) from {}?", count, sender)];
-                if let Some(warning) = &impact.warning {
-                    match warning {
-                        ThreadWarning::SenderEmailMode {
-                            thread_count,
-                            email_count,
-                        } => {
-                            lines.push(format!(
-                                "{} {} thread(s) also contain {} email(s) from other senders",
-                                WARNING_CHAR, thread_count, email_count
-                            ));
-                            lines.push(
-                                "(only emails from this sender will be archived)".to_string(),
-                            );
-                        }
-                        ThreadWarning::DomainMode { thread_count } => {
-                            lines.push(format!(
-                                "{} {} thread(s) have multiple participants",
-                                WARNING_CHAR, thread_count
-                            ));
-                        }
-                    }
-                }
-                lines.push("(y/n)".to_string());
-                lines
+            ConfirmAction::ArchiveEmails { sender, count } => {
+                vec![
+                    format!("Archive {} email(s) from {}?", count, sender),
+                    "(y/n)".to_string(),
+                ]
             }
-            ConfirmAction::DeleteEmails {
-                sender,
-                count,
-                impact,
-            } => {
-                let mut lines = vec![format!("Delete {} email(s) from {}?", count, sender)];
-                if let Some(warning) = &impact.warning {
-                    match warning {
-                        ThreadWarning::SenderEmailMode {
-                            thread_count,
-                            email_count,
-                        } => {
-                            lines.push(format!(
-                                "{} {} thread(s) also contain {} email(s) from other senders",
-                                WARNING_CHAR, thread_count, email_count
-                            ));
-                            lines
-                                .push("(only emails from this sender will be deleted)".to_string());
-                        }
-                        ThreadWarning::DomainMode { thread_count } => {
-                            lines.push(format!(
-                                "{} {} thread(s) have multiple participants",
-                                WARNING_CHAR, thread_count
-                            ));
-                        }
-                    }
-                }
-                lines.push("(y/n)".to_string());
-                lines
+            ConfirmAction::DeleteEmails { sender, count } => {
+                vec![
+                    format!("Delete {} email(s) from {}?", count, sender),
+                    "(y/n)".to_string(),
+                ]
             }
             ConfirmAction::ArchiveThread { thread_email_count } => {
                 vec![
@@ -376,25 +319,36 @@ impl Widget for GroupListWidget<'_> {
             GroupMode::BySenderEmail => "email",
             GroupMode::ByDomain => "domain",
         };
-        let total_emails: usize = self.app.groups.iter().map(|g| g.count()).sum();
+        let filter_indicator = if self.app.filter_to_threads {
+            " [Threads]"
+        } else {
+            ""
+        };
+        let filtered_groups = self.app.filtered_groups();
+        let total_emails: usize = filtered_groups.iter().map(|g| g.count()).sum();
         let title = format!(
-            " Senders (by {}) — {} emails in {} groups ",
+            " Senders (by {}){} — {} emails in {} groups ",
             mode_str,
+            filter_indicator,
             total_emails,
-            self.app.groups.len()
+            filtered_groups.len()
         );
         let block = Block::default().borders(Borders::ALL).title(title);
 
         let inner = block.inner(area);
         block.render(area, buf);
 
-        for (i, group) in self.app.groups.iter().enumerate().skip(self.scroll_offset) {
+        // Get the currently selected group to match by key
+        let selected_key = self.app.groups.get(self.app.selected_group).map(|g| &g.key);
+
+        for (i, group) in filtered_groups.iter().enumerate().skip(self.scroll_offset) {
             let row_index = i - self.scroll_offset;
             if row_index >= inner.height as usize {
                 break;
             }
 
-            let style = if i == self.app.selected_group {
+            let is_selected = selected_key.is_some_and(|k| k == &group.key);
+            let style = if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
@@ -402,7 +356,7 @@ impl Widget for GroupListWidget<'_> {
                 Style::default()
             };
 
-            let thread_indicator = if self.app.group_has_multi_sender_threads(group) {
+            let thread_indicator = if self.app.group_has_multi_message_threads(group) {
                 "◈ "
             } else {
                 "  "
@@ -446,6 +400,11 @@ impl StatefulWidget for EmailListWidget<'_> {
     type State = TableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let filter_indicator = if self.app.filter_to_threads {
+            " [Threads]"
+        } else {
+            ""
+        };
         let title = self
             .app
             .current_group()
@@ -453,11 +412,14 @@ impl StatefulWidget for EmailListWidget<'_> {
                 let email_count = self.app.total_thread_emails_for_group(g);
                 let thread_count = g.thread_count();
                 if thread_count == email_count {
-                    format!(" Threads from {} — {} threads ", g.key, thread_count)
+                    format!(
+                        " Threads from {}{} — {} threads ",
+                        g.key, filter_indicator, thread_count
+                    )
                 } else {
                     format!(
-                        " Threads from {} — {} threads ({} emails) ",
-                        g.key, thread_count, email_count
+                        " Threads from {}{} — {} threads ({} emails) ",
+                        g.key, filter_indicator, thread_count, email_count
                     )
                 }
             })
@@ -468,41 +430,55 @@ impl StatefulWidget for EmailListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        if let Some(group) = self.app.current_group() {
-            // Display one row per thread (newest email in each thread)
-            let rows: Vec<Row> = group
-                .threads()
-                .iter()
-                .map(|email| {
-                    let has_other_senders = self.app.thread_has_multiple_senders(&email.thread_id);
+        // Use filtered threads (respects filter_to_threads setting)
+        let filtered_threads = self.app.filtered_threads_in_current_group();
 
-                    let thread_indicator = if has_other_senders { "◈" } else { " " };
-                    let date_str = format_date(&email.date);
-
-                    Row::new(vec![
-                        date_str,
-                        thread_indicator.to_string(),
-                        email.subject.clone(),
-                    ])
-                })
-                .collect();
-
-            let table = Table::new(
-                rows,
-                [
-                    Constraint::Length(12), // Date column
-                    Constraint::Length(1),  // Thread indicator
-                    Constraint::Min(20),    // Subject
-                ],
-            )
-            .row_highlight_style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+        // Show message if filter is active but no threads match
+        if filtered_threads.is_empty() && self.app.filter_to_threads {
+            let msg = "No threads in this group (press t to show all)";
+            let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
+            let y = inner.y + inner.height / 2;
+            buf.set_line(
+                x,
+                y,
+                &Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray))),
+                inner.width,
             );
-
-            StatefulWidget::render(table, inner, buf, state);
+            return;
         }
+
+        // Display one row per thread (newest email in each thread)
+        let rows: Vec<Row> = filtered_threads
+            .iter()
+            .map(|email| {
+                let has_multiple_messages = self.app.thread_has_multiple_messages(&email.thread_id);
+
+                let thread_indicator = if has_multiple_messages { "◈" } else { " " };
+                let date_str = format_date(&email.date);
+
+                Row::new(vec![
+                    date_str,
+                    thread_indicator.to_string(),
+                    email.subject.clone(),
+                ])
+            })
+            .collect();
+
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(12), // Date column
+                Constraint::Length(1),  // Thread indicator
+                Constraint::Min(20),    // Subject
+            ],
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        StatefulWidget::render(table, inner, buf, state);
     }
 }
 
@@ -598,10 +574,10 @@ impl Widget for HelpBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let help_text = match self.app.view {
             View::GroupList => {
-                "j/↓: next | k/↑: prev | Enter: open | m: toggle mode | r: refresh | q: quit"
+                "j/↓: next | k/↑: prev | Enter: open | t: threads only | m: toggle mode | r: refresh | q: quit"
             }
             View::EmailList => {
-                "j/↓: next | k/↑: prev | Enter: thread | a/A: archive | d/D: delete | m: toggle | q: back"
+                "j/↓: next | k/↑: prev | Enter: thread | a/A: archive | d/D: delete | t: threads only | m: toggle | q: back"
             }
             View::Thread => {
                 "j/↓: next | k/↑: prev | Enter: browser | A: archive | D: delete | q: back"
@@ -748,38 +724,29 @@ impl Widget for AccountSelectWidget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ThreadImpact, ThreadWarning};
 
     #[test]
-    fn test_confirm_action_archive_no_impact() {
+    fn test_confirm_action_archive_emails() {
         let action = ConfirmAction::ArchiveEmails {
             sender: "test@example.com".to_string(),
             count: 5,
-            impact: ThreadImpact { warning: None },
         };
         let lines = action.message();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("Archive 5 email(s)"));
-        assert!(!lines.iter().any(|l| l.contains(WARNING_CHAR)));
+        assert!(lines[0].contains("test@example.com"));
     }
 
     #[test]
-    fn test_confirm_action_archive_with_impact() {
-        let action = ConfirmAction::ArchiveEmails {
+    fn test_confirm_action_delete_emails() {
+        let action = ConfirmAction::DeleteEmails {
             sender: "test@example.com".to_string(),
-            count: 5,
-            impact: ThreadImpact {
-                warning: Some(ThreadWarning::SenderEmailMode {
-                    thread_count: 2,
-                    email_count: 4,
-                }),
-            },
+            count: 3,
         };
         let lines = action.message();
-        assert!(lines.len() > 2);
-        assert!(lines.iter().any(|l| l.contains(WARNING_CHAR)));
-        assert!(lines.iter().any(|l| l.contains("2 thread(s)")));
-        assert!(lines.iter().any(|l| l.contains("4 email(s) from other")));
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Delete 3 email(s)"));
+        assert!(lines[0].contains("test@example.com"));
     }
 
     #[test]
