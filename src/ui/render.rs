@@ -59,10 +59,28 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
             frame.render_stateful_widget(widget, chunks[0], &mut table_state);
         }
         View::UndoHistory => {
-            // Render the group list as background (dimmed)
-            ui_state.viewport_heights.group_list = inner_height;
-            let widget = GroupListWidget::new(app, ui_state.group_scroll_offset);
-            frame.render_widget(widget, chunks[0]);
+            // Render the previous view as background
+            match app.previous_view() {
+                Some(View::EmailList) => {
+                    ui_state.viewport_heights.email_list = inner_height;
+                    let widget = EmailListWidget::new(app);
+                    let mut table_state = TableState::default().with_selected(app.selected_email);
+                    frame.render_stateful_widget(widget, chunks[0], &mut table_state);
+                }
+                Some(View::Thread) => {
+                    ui_state.viewport_heights.thread_view = inner_height;
+                    let widget = ThreadViewWidget::new(app);
+                    let mut table_state =
+                        TableState::default().with_selected(app.selected_thread_email);
+                    frame.render_stateful_widget(widget, chunks[0], &mut table_state);
+                }
+                _ => {
+                    // Default to group list for GroupList or None
+                    ui_state.viewport_heights.group_list = inner_height;
+                    let widget = GroupListWidget::new(app, ui_state.group_scroll_offset);
+                    frame.render_widget(widget, chunks[0]);
+                }
+            }
 
             // Calculate modal height for viewport tracking
             let modal_height = (inner_height as f32 * 0.6) as usize;

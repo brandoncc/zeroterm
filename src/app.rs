@@ -200,11 +200,18 @@ impl App {
             .sort_by_key(|g| (std::cmp::Reverse(g.count()), g.key.to_lowercase()));
 
         // If we're viewing a specific group, find its new index after sorting
-        if let Some(ref key) = self.viewing_group_key {
+        if let Some(ref key) = self.viewing_group_key.clone() {
             if let Some(idx) = self.groups.iter().position(|g| &g.key == key) {
                 self.selected_group = idx;
+            } else {
+                // Group no longer exists - update viewing_group_key to current selection
+                // This prevents undo from switching back to a previously deleted group
+                if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
+                    self.selected_group = self.groups.len() - 1;
+                }
+                self.viewing_group_key =
+                    self.groups.get(self.selected_group).map(|g| g.key.clone());
             }
-            // If group not found, viewing_group_key stays set so UI can show empty state
         } else if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
             // Reset selection if out of bounds (only when not viewing a specific group)
             self.selected_group = self.groups.len() - 1;
@@ -461,6 +468,11 @@ impl App {
     /// Returns the currently selected undo entry, if any
     pub fn current_undo_entry(&self) -> Option<&UndoEntry> {
         self.undo_history.get(self.selected_undo)
+    }
+
+    /// Returns the view to return to after closing undo history
+    pub fn previous_view(&self) -> Option<View> {
+        self.previous_view
     }
 
     /// Enters the next view level (group -> emails -> thread)

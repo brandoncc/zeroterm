@@ -468,10 +468,7 @@ fn handle_demo_undo(app: &mut App, ui_state: &mut UiState, undo_storage: &mut De
         app.restore_emails(emails);
         // Remove the undo entry
         app.pop_undo(selected_idx);
-        // Exit undo view if history is empty
-        if app.undo_history.is_empty() {
-            app.exit_undo_history();
-        }
+        // Stay in undo view - user can close it manually with Escape
         ui_state.set_status(format!("Restored {} email(s)", count));
     }
 }
@@ -924,10 +921,7 @@ fn run_app(
                             Ok(()) => {
                                 // Remove the entry from history
                                 app.pop_undo(index);
-                                // If history is now empty, exit undo view
-                                if app.undo_history.is_empty() {
-                                    app.exit_undo_history();
-                                }
+                                // Stay in undo view - user can close it manually with Escape
                                 // Trigger refresh to update the email list
                                 ui_state.set_busy("Refreshing...");
                                 let _ = cmd_tx.send(ImapCommand::FetchInbox);

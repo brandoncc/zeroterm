@@ -641,7 +641,7 @@ impl Widget for UndoHistoryWidget<'_> {
         let modal_y = area.y + (area.height.saturating_sub(modal_height)) / 2;
         let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
 
-        // Clear the background behind the modal
+        // Clear only the modal area (renders on top of background content)
         for row in modal_area.y..modal_area.y + modal_area.height {
             for col in modal_area.x..modal_area.x + modal_area.width {
                 buf[(col, row)].set_char(' ');
