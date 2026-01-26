@@ -2,7 +2,7 @@
 
 A terminal-based email client designed for achieving inbox zero. Zeroterm groups emails by sender and allows you to quickly archive or delete them—individually or all at once.
 
-![Zeroterm demo](zeroterm.gif)
+[Watch the demo video](zeroterm-demo.mov)
 
 ## Disclaimer
 
