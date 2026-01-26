@@ -8,6 +8,7 @@ use ratatui::{
 };
 
 use crate::app::{App, GroupMode, ThreadImpact, ThreadWarning, View};
+use crate::config::AccountConfig;
 
 /// Warning indicator character for messages
 const WARNING_CHAR: char = '⚠';
@@ -513,6 +514,94 @@ impl Widget for ConfirmDialogWidget<'_> {
                 inner.width,
             );
         }
+    }
+}
+
+/// State for account selection
+#[derive(Debug)]
+pub struct AccountSelection {
+    /// List of (account_name, account_config) pairs
+    pub accounts: Vec<(String, AccountConfig)>,
+    /// Currently selected index
+    pub selected: usize,
+}
+
+impl AccountSelection {
+    pub fn new(accounts: Vec<(String, AccountConfig)>) -> Self {
+        Self {
+            accounts,
+            selected: 0,
+        }
+    }
+
+    pub fn select_next(&mut self) {
+        if self.selected < self.accounts.len().saturating_sub(1) {
+            self.selected += 1;
+        }
+    }
+
+    pub fn select_previous(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn current_account(&self) -> Option<&(String, AccountConfig)> {
+        self.accounts.get(self.selected)
+    }
+}
+
+/// Widget for account selection
+pub struct AccountSelectWidget<'a> {
+    selection: &'a AccountSelection,
+}
+
+impl<'a> AccountSelectWidget<'a> {
+    pub fn new(selection: &'a AccountSelection) -> Self {
+        Self { selection }
+    }
+}
+
+impl Widget for AccountSelectWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Select Account ");
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        for (i, (name, account)) in self.selection.accounts.iter().enumerate() {
+            if i >= inner.height.saturating_sub(2) as usize {
+                break;
+            }
+
+            let style = if i == self.selection.selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let line = format!("{} ({})", name, account.email);
+            let span = Span::styled(line, style);
+
+            buf.set_line(inner.x, inner.y + i as u16, &Line::from(span), inner.width);
+        }
+
+        // Help text at the bottom
+        let help_y = inner.y + inner.height.saturating_sub(1);
+        let help_text = "j/↓: next | k/↑: prev | Enter: select | q: quit";
+        buf.set_line(
+            inner.x,
+            help_y,
+            &Line::from(Span::styled(
+                help_text,
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner.width,
+        );
     }
 }
 

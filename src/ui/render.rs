@@ -5,8 +5,8 @@ use ratatui::{
 
 use crate::app::{App, View};
 use crate::ui::widgets::{
-    BusyModalWidget, ConfirmDialogWidget, EmailListWidget, GroupListWidget, HelpBarWidget,
-    ThreadViewWidget, UiState,
+    AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
+    GroupListWidget, HelpBarWidget, ThreadViewWidget, UiState,
 };
 
 /// Renders the entire application UI
@@ -53,6 +53,12 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &UiState) {
         let modal = BusyModalWidget::new(msg, ui_state.spinner_char());
         frame.render_widget(modal, frame.area());
     }
+}
+
+/// Renders the account selection UI
+pub fn render_account_select(frame: &mut Frame, selection: &AccountSelection) {
+    let widget = AccountSelectWidget::new(selection);
+    frame.render_widget(widget, frame.area());
 }
 
 /// Creates a centered rectangle for dialogs
