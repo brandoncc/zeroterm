@@ -164,6 +164,20 @@ impl App {
         }
     }
 
+    /// Moves selection down by n items (clamped to list bounds)
+    pub fn select_next_n(&mut self, n: usize) {
+        for _ in 0..n {
+            self.select_next();
+        }
+    }
+
+    /// Moves selection up by n items (clamped to list bounds)
+    pub fn select_previous_n(&mut self, n: usize) {
+        for _ in 0..n {
+            self.select_previous();
+        }
+    }
+
     /// Selects the next group in the list
     fn select_next_group(&mut self) {
         if !self.groups.is_empty() && self.selected_group < self.groups.len() - 1 {

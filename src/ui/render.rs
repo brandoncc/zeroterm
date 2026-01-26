@@ -1,6 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
+    widgets::{Block, Borders, TableState},
 };
 
 use crate::app::{App, View};
@@ -10,7 +11,7 @@ use crate::ui::widgets::{
 };
 
 /// Renders the entire application UI
-pub fn render(frame: &mut Frame, app: &App, ui_state: &UiState) {
+pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -19,19 +20,42 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &UiState) {
         ])
         .split(frame.area());
 
+    // Calculate inner height for viewport tracking (account for borders)
+    let block = Block::default().borders(Borders::ALL);
+    let inner_height = block.inner(chunks[0]).height as usize;
+
     // Render main content based on view
     match app.view {
         View::GroupList => {
-            let widget = GroupListWidget::new(app);
+            ui_state.viewport_heights.group_list = inner_height;
+
+            // Calculate scroll offset to keep selection visible
+            let selected = app.selected_group;
+            let height = inner_height;
+            let offset = &mut ui_state.group_scroll_offset;
+
+            if selected < *offset {
+                *offset = selected;
+            } else if selected >= *offset + height {
+                *offset = selected.saturating_sub(height) + 1;
+            }
+
+            let widget = GroupListWidget::new(app, *offset);
             frame.render_widget(widget, chunks[0]);
         }
         View::EmailList => {
+            ui_state.viewport_heights.email_list = inner_height;
+
             let widget = EmailListWidget::new(app);
-            frame.render_widget(widget, chunks[0]);
+            let mut table_state = TableState::default().with_selected(app.selected_email);
+            frame.render_stateful_widget(widget, chunks[0], &mut table_state);
         }
         View::Thread => {
+            ui_state.viewport_heights.thread_view = inner_height;
+
             let widget = ThreadViewWidget::new(app);
-            frame.render_widget(widget, chunks[0]);
+            let mut table_state = TableState::default().with_selected(app.selected_thread_email);
+            frame.render_stateful_widget(widget, chunks[0], &mut table_state);
         }
     }
 
