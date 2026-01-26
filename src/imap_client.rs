@@ -18,6 +18,10 @@ pub trait EmailClient {
 
     /// Deletes an email (moves to trash)
     fn delete_email(&mut self, email_id: &str, folder: &str) -> Result<()>;
+
+    /// Restores emails to their original folders by searching for them by Message-ID
+    /// Takes a list of (message_id, current_folder, destination_folder) tuples
+    fn restore_emails(&mut self, emails: &[(String, String, String)]) -> Result<()>;
 }
 
 /// IMAP client for Gmail access
@@ -202,6 +206,49 @@ impl EmailClient for ImapClient {
         self.session
             .uid_mv(uid, "[Gmail]/Trash")
             .context("Failed to delete email")?;
+
+        Ok(())
+    }
+
+    fn restore_emails(&mut self, emails: &[(String, String, String)]) -> Result<()> {
+        use std::collections::HashMap;
+
+        // Group emails by current folder to minimize folder switches
+        let mut by_folder: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+        for (message_id, current_folder, dest_folder) in emails {
+            by_folder
+                .entry(current_folder.as_str())
+                .or_default()
+                .push((message_id.as_str(), dest_folder.as_str()));
+        }
+
+        // Process each group
+        for (current_folder, moves) in by_folder {
+            self.session
+                .select(current_folder)
+                .context(format!("Failed to select {}", current_folder))?;
+
+            for (message_id, dest_folder) in moves {
+                // Search for the email by Message-ID to get its current UID
+                // Gmail assigns new UIDs when emails move folders
+                let search_query = format!("HEADER Message-ID {}", message_id);
+                let uids = self
+                    .session
+                    .uid_search(&search_query)
+                    .context(format!("Failed to search for Message-ID {}", message_id))?;
+
+                if let Some(uid) = uids.into_iter().next() {
+                    self.session
+                        .uid_mv(uid.to_string(), dest_folder)
+                        .context(format!(
+                            "Failed to restore email {} to {}",
+                            message_id, dest_folder
+                        ))?;
+                }
+                // If email not found, it may have been permanently deleted or already moved
+                // Continue with other emails rather than failing entirely
+            }
+        }
 
         Ok(())
     }
@@ -438,6 +485,28 @@ mod tests {
             .returning(|_, _| Ok(()));
 
         let result = mock.delete_email("email456", "INBOX");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_mock_client_restore() {
+        let mut mock = MockEmailClient::new();
+
+        mock.expect_restore_emails().returning(|_| Ok(()));
+
+        let restore_ops = vec![
+            (
+                "123".to_string(),
+                "[Gmail]/All Mail".to_string(),
+                "INBOX".to_string(),
+            ),
+            (
+                "456".to_string(),
+                "[Gmail]/Trash".to_string(),
+                "INBOX".to_string(),
+            ),
+        ];
+        let result = mock.restore_emails(&restore_ops);
         assert!(result.is_ok());
     }
 }

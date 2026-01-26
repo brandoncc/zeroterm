@@ -20,7 +20,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::{App, View};
+use app::{App, UndoActionType, UndoContext, UndoEntry, View};
 use config::AccountConfig;
 use email::Email;
 use imap_client::{EmailClient, ImapClient};
@@ -30,10 +30,11 @@ use ui::widgets::{AccountSelection, ConfirmAction, UiState, WARNING_CHAR};
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
     FetchInbox,
-    ArchiveEmail(String, String),           // (uid, folder)
-    DeleteEmail(String, String),            // (uid, folder)
-    ArchiveMultiple(Vec<(String, String)>), // Vec<(uid, folder)>
-    DeleteMultiple(Vec<(String, String)>),  // Vec<(uid, folder)>
+    ArchiveEmail(String, String),                 // (uid, folder)
+    DeleteEmail(String, String),                  // (uid, folder)
+    ArchiveMultiple(Vec<(String, String)>),       // Vec<(uid, folder)>
+    DeleteMultiple(Vec<(String, String)>),        // Vec<(uid, folder)>
+    RestoreEmails(Vec<(String, String, String)>), // Vec<(uid, current_folder, dest_folder)>
     Shutdown,
 }
 
@@ -44,6 +45,7 @@ enum ImapResponse {
     DeleteResult(Result<()>),
     MultiArchiveResult(Result<()>),
     MultiDeleteResult(Result<()>),
+    RestoreResult(Result<()>),
     /// Progress update during bulk operations (current, total, action)
     Progress(usize, usize, String),
     Connected,
@@ -238,6 +240,31 @@ fn spawn_imap_worker(
                     }
                     let _ = resp_tx.send(ImapResponse::MultiDeleteResult(result));
                 }
+                ImapCommand::RestoreEmails(restore_ops) => {
+                    let total = restore_ops.len();
+                    let mut result = Ok(());
+                    for (i, (message_id, current_folder, dest_folder)) in
+                        restore_ops.iter().enumerate()
+                    {
+                        // Send progress update
+                        let _ = resp_tx.send(ImapResponse::Progress(
+                            i + 1,
+                            total,
+                            "Restoring".to_string(),
+                        ));
+                        // Restore single email
+                        let single_restore = [(
+                            message_id.clone(),
+                            current_folder.clone(),
+                            dest_folder.clone(),
+                        )];
+                        if let Err(e) = client.restore_emails(&single_restore) {
+                            result = Err(e);
+                            break;
+                        }
+                    }
+                    let _ = resp_tx.send(ImapResponse::RestoreResult(result));
+                }
                 ImapCommand::Shutdown => {
                     break;
                 }
@@ -379,6 +406,29 @@ fn run_app(
                     }
                     ui_state.clear_busy();
                 }
+                ImapResponse::RestoreResult(result) => {
+                    if let Some(PendingOp::Undo(index)) = pending_operation.take() {
+                        match result {
+                            Ok(()) => {
+                                // Remove the entry from history
+                                app.pop_undo(index);
+                                // If history is now empty, exit undo view
+                                if app.undo_history.is_empty() {
+                                    app.exit_undo_history();
+                                }
+                                // Trigger refresh to update the email list
+                                ui_state.set_busy("Refreshing...");
+                                let _ = cmd_tx.send(ImapCommand::FetchInbox);
+                            }
+                            Err(e) => {
+                                ui_state.clear_busy();
+                                ui_state.set_status(format!("Undo failed: {}", e));
+                            }
+                        }
+                    } else {
+                        ui_state.clear_busy();
+                    }
+                }
                 ImapResponse::Progress(current, total, action) => {
                     ui_state.update_busy_message(format!("{} {} of {}...", action, current, total));
                 }
@@ -435,6 +485,66 @@ fn run_app(
             let is_g_sequence = matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G'));
             if !is_g_sequence {
                 pending_g = false;
+            }
+
+            // Handle UndoHistory view separately
+            if app.view == View::UndoHistory {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        app.exit_undo_history();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        app.select_next();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        app.select_previous();
+                    }
+                    KeyCode::Char('g') => {
+                        if pending_g {
+                            app.select_first();
+                            pending_g = false;
+                        } else {
+                            pending_g = true;
+                        }
+                    }
+                    KeyCode::Char('G') => {
+                        pending_g = false;
+                        app.select_last();
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let half_page = ui_state.viewport_heights.for_view(app.view) / 2;
+                        app.select_next_n(half_page.max(1));
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let half_page = ui_state.viewport_heights.for_view(app.view) / 2;
+                        app.select_previous_n(half_page.max(1));
+                    }
+                    KeyCode::Enter => {
+                        // Execute the undo action
+                        if let Some(entry) = app.current_undo_entry() {
+                            let restore_ops: Vec<(String, String, String)> = entry
+                                .emails
+                                .iter()
+                                .map(|(uid, orig_folder)| {
+                                    (
+                                        uid.clone(),
+                                        entry.current_folder.clone(),
+                                        orig_folder.clone(),
+                                    )
+                                })
+                                .collect();
+
+                            if !restore_ops.is_empty() {
+                                let count = restore_ops.len();
+                                ui_state.set_busy(format!("Restoring {} email(s)...", count));
+                                pending_operation = Some(PendingOp::Undo(app.selected_undo));
+                                let _ = cmd_tx.send(ImapCommand::RestoreEmails(restore_ops));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
             }
 
             // Normal input handling
@@ -502,6 +612,10 @@ fn run_app(
                         app.toggle_thread_filter();
                     }
                 }
+                KeyCode::Char('u') => {
+                    // Enter undo history view (if history is not empty)
+                    app.enter_undo_history();
+                }
                 KeyCode::Char('a') => {
                     handle_archive(
                         &mut app,
@@ -542,6 +656,7 @@ enum PendingOp {
     DeleteGroup,
     ArchiveThread(String), // thread id
     DeleteThread(String),  // thread id
+    Undo(usize),           // index in undo history
 }
 
 /// Handles the 'a' key - archive single email (not available in thread view)
@@ -553,8 +668,8 @@ fn handle_archive(
     protect_threads: bool,
 ) -> Result<()> {
     match app.view {
-        View::GroupList => {
-            // No action on single 'a' in group list
+        View::GroupList | View::UndoHistory => {
+            // No action on single 'a' in group list or undo history
         }
         View::EmailList => {
             // Allow if thread has only one email (nothing else to review)
@@ -568,6 +683,19 @@ fn handle_archive(
             }
             // Archive single email (only this sender's email)
             if let Some(email) = app.current_email().cloned() {
+                // Record undo entry before the action (only if email has Message-ID)
+                if let Some(ref message_id) = email.message_id {
+                    let undo_entry = UndoEntry {
+                        action_type: UndoActionType::Archive,
+                        context: UndoContext::SingleEmail {
+                            subject: email.subject.clone(),
+                        },
+                        emails: vec![(message_id.clone(), email.source_folder.clone())],
+                        current_folder: "[Gmail]/All Mail".to_string(),
+                    };
+                    app.push_undo(undo_entry);
+                }
+
                 ui_state.set_busy("Archiving...");
                 *pending_operation = Some(PendingOp::ArchiveSingle(email.id.clone()));
                 cmd_tx.send(ImapCommand::ArchiveEmail(
@@ -586,8 +714,8 @@ fn handle_archive(
 /// Handles the 'A' key - archive all in group
 fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
-        View::GroupList => {
-            // No 'A' in group list view to prevent accidental bulk operations
+        View::GroupList | View::UndoHistory => {
+            // No 'A' in group list view or undo history to prevent accidental bulk operations
         }
         View::EmailList => {
             if let Some(group) = app.current_group() {
@@ -625,8 +753,8 @@ fn handle_delete(
     protect_threads: bool,
 ) -> Result<()> {
     match app.view {
-        View::GroupList => {
-            // No action on single 'd' in group list
+        View::GroupList | View::UndoHistory => {
+            // No action on single 'd' in group list or undo history
         }
         View::EmailList => {
             // Allow if thread has only one email (nothing else to review)
@@ -640,6 +768,19 @@ fn handle_delete(
             }
             // Delete single email (only this sender's email)
             if let Some(email) = app.current_email().cloned() {
+                // Record undo entry before the action (only if email has Message-ID)
+                if let Some(ref message_id) = email.message_id {
+                    let undo_entry = UndoEntry {
+                        action_type: UndoActionType::Delete,
+                        context: UndoContext::SingleEmail {
+                            subject: email.subject.clone(),
+                        },
+                        emails: vec![(message_id.clone(), email.source_folder.clone())],
+                        current_folder: "[Gmail]/Trash".to_string(),
+                    };
+                    app.push_undo(undo_entry);
+                }
+
                 ui_state.set_busy("Deleting...");
                 *pending_operation = Some(PendingOp::DeleteSingle(email.id.clone()));
                 cmd_tx.send(ImapCommand::DeleteEmail(
@@ -658,8 +799,8 @@ fn handle_delete(
 /// Handles the 'D' key - delete all in group
 fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
-        View::GroupList => {
-            // No 'D' in group list view to prevent accidental bulk operations
+        View::GroupList | View::UndoHistory => {
+            // No 'D' in group list view or undo history to prevent accidental bulk operations
         }
         View::EmailList => {
             if let Some(group) = app.current_group() {
@@ -731,19 +872,47 @@ fn handle_confirmed_action(
     action: ConfirmAction,
 ) -> Result<()> {
     match action {
-        ConfirmAction::ArchiveEmails { .. } => {
+        ConfirmAction::ArchiveEmails { sender, .. } => {
             // Archive only this sender's emails (not full threads)
             let email_ids = app.current_group_email_ids();
+            let message_ids = app.current_group_message_ids();
             if !email_ids.is_empty() {
+                // Record undo entry before the action (using Message-IDs for restore)
+                if !message_ids.is_empty() {
+                    let undo_entry = UndoEntry {
+                        action_type: UndoActionType::Archive,
+                        context: UndoContext::Group {
+                            sender: sender.clone(),
+                        },
+                        emails: message_ids,
+                        current_folder: "[Gmail]/All Mail".to_string(),
+                    };
+                    app.push_undo(undo_entry);
+                }
+
                 ui_state.set_busy(format!("Archiving {} emails...", email_ids.len()));
                 *pending_operation = Some(PendingOp::ArchiveGroup);
                 cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
             }
         }
-        ConfirmAction::DeleteEmails { .. } => {
+        ConfirmAction::DeleteEmails { sender, .. } => {
             // Delete only this sender's emails (not full threads)
             let email_ids = app.current_group_email_ids();
+            let message_ids = app.current_group_message_ids();
             if !email_ids.is_empty() {
+                // Record undo entry before the action (using Message-IDs for restore)
+                if !message_ids.is_empty() {
+                    let undo_entry = UndoEntry {
+                        action_type: UndoActionType::Delete,
+                        context: UndoContext::Group {
+                            sender: sender.clone(),
+                        },
+                        emails: message_ids,
+                        current_folder: "[Gmail]/Trash".to_string(),
+                    };
+                    app.push_undo(undo_entry);
+                }
+
                 ui_state.set_busy(format!("Deleting {} emails...", email_ids.len()));
                 *pending_operation = Some(PendingOp::DeleteGroup);
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
@@ -752,10 +921,26 @@ fn handle_confirmed_action(
         ConfirmAction::ArchiveThread { .. } => {
             // Archive entire thread (including user's sent emails)
             let email_ids = app.current_thread_email_ids();
+            let message_ids = app.current_thread_message_ids();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
+            let subject = app.current_email().map(|e| e.subject.clone());
             if !email_ids.is_empty()
                 && let Some(tid) = thread_id
+                && let Some(subj) = subject
             {
+                // Record undo entry before the action (using Message-IDs for restore)
+                if !message_ids.is_empty() {
+                    let undo_entry = UndoEntry {
+                        action_type: UndoActionType::Archive,
+                        context: UndoContext::Thread {
+                            subject: subj.clone(),
+                        },
+                        emails: message_ids,
+                        current_folder: "[Gmail]/All Mail".to_string(),
+                    };
+                    app.push_undo(undo_entry);
+                }
+
                 ui_state.set_busy(format!("Archiving thread ({} emails)...", email_ids.len()));
                 *pending_operation = Some(PendingOp::ArchiveThread(tid));
                 cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
@@ -764,10 +949,26 @@ fn handle_confirmed_action(
         ConfirmAction::DeleteThread { .. } => {
             // Delete entire thread (including user's sent emails)
             let email_ids = app.current_thread_email_ids();
+            let message_ids = app.current_thread_message_ids();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
+            let subject = app.current_email().map(|e| e.subject.clone());
             if !email_ids.is_empty()
                 && let Some(tid) = thread_id
+                && let Some(subj) = subject
             {
+                // Record undo entry before the action (using Message-IDs for restore)
+                if !message_ids.is_empty() {
+                    let undo_entry = UndoEntry {
+                        action_type: UndoActionType::Delete,
+                        context: UndoContext::Thread {
+                            subject: subj.clone(),
+                        },
+                        emails: message_ids,
+                        current_folder: "[Gmail]/Trash".to_string(),
+                    };
+                    app.push_undo(undo_entry);
+                }
+
                 ui_state.set_busy(format!("Deleting thread ({} emails)...", email_ids.len()));
                 *pending_operation = Some(PendingOp::DeleteThread(tid));
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;

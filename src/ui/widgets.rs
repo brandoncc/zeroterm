@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Row, StatefulWidget, Table, TableState, Widget},
 };
 
-use crate::app::{App, GroupMode, View};
+use crate::app::{App, GroupMode, UndoActionType, UndoContext, View};
 use crate::config::AccountConfig;
 
 /// Warning indicator character for messages
@@ -78,6 +78,7 @@ pub struct ViewportHeights {
     pub group_list: usize,
     pub email_list: usize,
     pub thread_view: usize,
+    pub undo_history: usize,
 }
 
 impl ViewportHeights {
@@ -87,6 +88,7 @@ impl ViewportHeights {
             View::GroupList => self.group_list,
             View::EmailList => self.email_list,
             View::Thread => self.thread_view,
+            View::UndoHistory => self.undo_history,
         }
     }
 }
@@ -104,6 +106,8 @@ pub struct UiState {
     pub viewport_heights: ViewportHeights,
     /// Scroll offset for group list (manual scrolling since it uses custom rendering)
     pub group_scroll_offset: usize,
+    /// Scroll offset for undo history list
+    pub undo_scroll_offset: usize,
 }
 
 impl UiState {
@@ -556,6 +560,136 @@ impl StatefulWidget for ThreadViewWidget<'_> {
     }
 }
 
+/// Widget for rendering the undo history list
+pub struct UndoHistoryWidget<'a> {
+    app: &'a App,
+    scroll_offset: usize,
+}
+
+impl<'a> UndoHistoryWidget<'a> {
+    pub fn new(app: &'a App, scroll_offset: usize) -> Self {
+        Self { app, scroll_offset }
+    }
+
+    /// Formats an undo entry for display
+    fn format_entry(entry: &crate::app::UndoEntry) -> String {
+        let action_icon = match entry.action_type {
+            UndoActionType::Archive => "📦",
+            UndoActionType::Delete => "🗑️",
+        };
+
+        let action_verb = match entry.action_type {
+            UndoActionType::Archive => "archived",
+            UndoActionType::Delete => "deleted",
+        };
+
+        let email_count = entry.emails.len();
+        let email_word = if email_count == 1 { "email" } else { "emails" };
+
+        match &entry.context {
+            UndoContext::SingleEmail { subject } => {
+                let truncated = if subject.len() > 40 {
+                    format!("{}...", &subject[..37])
+                } else {
+                    subject.clone()
+                };
+                format!("{} {} '{}' (1 email)", action_icon, action_verb, truncated)
+            }
+            UndoContext::Group { sender } => {
+                format!(
+                    "{} {} {} {} from {}",
+                    action_icon, action_verb, email_count, email_word, sender
+                )
+            }
+            UndoContext::Thread { subject } => {
+                let truncated = if subject.len() > 30 {
+                    format!("{}...", &subject[..27])
+                } else {
+                    subject.clone()
+                };
+                format!(
+                    "{} {} thread '{}' ({} {})",
+                    action_icon, action_verb, truncated, email_count, email_word
+                )
+            }
+        }
+    }
+}
+
+impl Widget for UndoHistoryWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        // Calculate centered modal area (80% width, 60% height)
+        let modal_width = (area.width as f32 * 0.8) as u16;
+        let modal_height = (area.height as f32 * 0.6) as u16;
+        let modal_x = area.x + (area.width.saturating_sub(modal_width)) / 2;
+        let modal_y = area.y + (area.height.saturating_sub(modal_height)) / 2;
+        let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
+
+        // Clear the background behind the modal
+        for row in modal_area.y..modal_area.y + modal_area.height {
+            for col in modal_area.x..modal_area.x + modal_area.width {
+                buf[(col, row)].set_char(' ');
+                buf[(col, row)].set_style(Style::default());
+            }
+        }
+
+        let title = format!(" Undo History — {} actions ", self.app.undo_history.len());
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(Style::default());
+
+        let inner = block.inner(modal_area);
+        block.render(modal_area, buf);
+
+        if self.app.undo_history.is_empty() {
+            let msg = "No actions to undo";
+            let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
+            let y = inner.y + inner.height / 2;
+            buf.set_line(
+                x,
+                y,
+                &Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray))),
+                inner.width,
+            );
+            return;
+        }
+
+        for (i, entry) in self
+            .app
+            .undo_history
+            .iter()
+            .enumerate()
+            .skip(self.scroll_offset)
+        {
+            let row_index = i - self.scroll_offset;
+            if row_index >= inner.height as usize {
+                break;
+            }
+
+            let is_selected = i == self.app.selected_undo;
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let line = Self::format_entry(entry);
+            let span = Span::styled(line, style);
+
+            buf.set_line(
+                inner.x,
+                inner.y + row_index as u16,
+                &Line::from(span),
+                inner.width,
+            );
+        }
+    }
+}
+
 /// Widget for the help bar at the bottom
 pub struct HelpBarWidget<'a> {
     app: &'a App,
@@ -569,15 +703,33 @@ impl<'a> HelpBarWidget<'a> {
 
 impl Widget for HelpBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let undo_hint = if self.app.undo_history_len() > 0 {
+            " | u: undo"
+        } else {
+            ""
+        };
+
         let help_text = match self.app.view {
             View::GroupList => {
-                "j/↓: next | k/↑: prev | Enter: open | t: threads only | m: toggle mode | r: refresh | q: quit"
+                format!(
+                    "j/↓: next | k/↑: prev | Enter: open | t: threads only | m: toggle mode | r: refresh{} | q: quit",
+                    undo_hint
+                )
             }
             View::EmailList => {
-                "j/↓: next | k/↑: prev | Enter: thread | a/A: archive | d/D: delete | t: threads only | m: toggle | q: back"
+                format!(
+                    "j/↓: next | k/↑: prev | Enter: thread | a/A: archive | d/D: delete | t: threads only | m: toggle{} | q: back",
+                    undo_hint
+                )
             }
             View::Thread => {
-                "j/↓: next | k/↑: prev | Enter: browser | A: archive | D: delete | q: back"
+                format!(
+                    "j/↓: next | k/↑: prev | Enter: browser | A: archive | D: delete{} | q: back",
+                    undo_hint
+                )
+            }
+            View::UndoHistory => {
+                "j/↓: next | k/↑: prev | Enter: undo selected | q: back".to_string()
             }
         };
 
