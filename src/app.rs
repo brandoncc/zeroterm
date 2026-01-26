@@ -461,6 +461,7 @@ impl App {
     }
 
     /// Returns the number of entries in undo history
+    #[cfg(test)]
     pub fn undo_history_len(&self) -> usize {
         self.undo_history.len()
     }
