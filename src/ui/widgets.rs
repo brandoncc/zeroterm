@@ -515,7 +515,7 @@ impl Widget for HelpBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let help_text = match self.app.view {
             View::GroupList => {
-                "j/↓: next | k/↑: prev | Enter: open | A: archive all | D: delete all | m: toggle mode | r: refresh | q: quit"
+                "j/↓: next | k/↑: prev | Enter: open | m: toggle mode | r: refresh | q: quit"
             }
             View::EmailList => {
                 "j/↓: next | k/↑: prev | Enter: thread | a/A: archive | d/D: delete | m: toggle | q: back"
