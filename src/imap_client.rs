@@ -10,11 +10,14 @@ pub trait EmailClient {
     /// Fetches inbox emails
     fn fetch_inbox(&mut self) -> Result<Vec<Email>>;
 
+    /// Fetches sent emails
+    fn fetch_sent(&mut self) -> Result<Vec<Email>>;
+
     /// Archives an email (removes from inbox)
-    fn archive_email(&mut self, email_id: &str) -> Result<()>;
+    fn archive_email(&mut self, email_id: &str, folder: &str) -> Result<()>;
 
     /// Deletes an email (moves to trash)
-    fn delete_email(&mut self, email_id: &str) -> Result<()>;
+    fn delete_email(&mut self, email_id: &str, folder: &str) -> Result<()>;
 }
 
 /// IMAP client for Gmail access
@@ -37,7 +40,7 @@ impl ImapClient {
     }
 
     /// Parses an IMAP message into our Email struct
-    fn parse_message(&self, fetch: &imap::types::Fetch) -> Option<Email> {
+    fn parse_message(&self, fetch: &imap::types::Fetch, source_folder: &str) -> Option<Email> {
         let uid = fetch.uid?;
         let envelope = fetch.envelope()?;
 
@@ -97,7 +100,8 @@ impl ImapClient {
             .subject(subject)
             .snippet(snippet)
             .date(date)
-            .references(references);
+            .references(references)
+            .source_folder(source_folder);
 
         if let Some(msg_id) = message_id {
             builder = builder.message_id(msg_id);
@@ -136,7 +140,7 @@ impl EmailClient for ImapClient {
 
         let mut emails = Vec::new();
         for msg in messages.iter() {
-            if let Some(email) = self.parse_message(msg) {
+            if let Some(email) = self.parse_message(msg, "INBOX") {
                 emails.push(email);
             }
         }
@@ -147,10 +151,39 @@ impl EmailClient for ImapClient {
         Ok(emails)
     }
 
-    fn archive_email(&mut self, uid: &str) -> Result<()> {
+    fn fetch_sent(&mut self) -> Result<Vec<Email>> {
         self.session
-            .select("INBOX")
-            .context("Failed to select INBOX")?;
+            .select("[Gmail]/Sent Mail")
+            .context("Failed to select [Gmail]/Sent Mail")?;
+
+        // Check if there are any messages
+        let mailbox = self.session.select("[Gmail]/Sent Mail")?;
+        if mailbox.exists == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Fetch all messages with headers
+        let messages = self
+            .session
+            .fetch("1:*", "(UID ENVELOPE BODY.PEEK[HEADER])")
+            .context("Failed to fetch sent messages")?;
+
+        let mut emails = Vec::new();
+        for msg in messages.iter() {
+            if let Some(email) = self.parse_message(msg, "[Gmail]/Sent Mail") {
+                emails.push(email);
+            }
+        }
+
+        // Note: thread IDs will be built after combining with inbox emails
+
+        Ok(emails)
+    }
+
+    fn archive_email(&mut self, uid: &str, folder: &str) -> Result<()> {
+        self.session
+            .select(folder)
+            .context(format!("Failed to select {}", folder))?;
 
         // Move to All Mail (Gmail's archive)
         self.session
@@ -160,10 +193,10 @@ impl EmailClient for ImapClient {
         Ok(())
     }
 
-    fn delete_email(&mut self, uid: &str) -> Result<()> {
+    fn delete_email(&mut self, uid: &str, folder: &str) -> Result<()> {
         self.session
-            .select("INBOX")
-            .context("Failed to select INBOX")?;
+            .select(folder)
+            .context(format!("Failed to select {}", folder))?;
 
         // Move to Trash
         self.session
@@ -383,10 +416,13 @@ mod tests {
         let mut mock = MockEmailClient::new();
 
         mock.expect_archive_email()
-            .with(mockall::predicate::eq("email123"))
-            .returning(|_| Ok(()));
+            .with(
+                mockall::predicate::eq("email123"),
+                mockall::predicate::eq("INBOX"),
+            )
+            .returning(|_, _| Ok(()));
 
-        let result = mock.archive_email("email123");
+        let result = mock.archive_email("email123", "INBOX");
         assert!(result.is_ok());
     }
 
@@ -395,10 +431,13 @@ mod tests {
         let mut mock = MockEmailClient::new();
 
         mock.expect_delete_email()
-            .with(mockall::predicate::eq("email456"))
-            .returning(|_| Ok(()));
+            .with(
+                mockall::predicate::eq("email456"),
+                mockall::predicate::eq("INBOX"),
+            )
+            .returning(|_, _| Ok(()));
 
-        let result = mock.delete_email("email456");
+        let result = mock.delete_email("email456", "INBOX");
         assert!(result.is_ok());
     }
 }
