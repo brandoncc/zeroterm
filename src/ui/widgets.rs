@@ -72,6 +72,28 @@ impl ConfirmAction {
 /// Spinner frames for animated busy indicator
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// Confetti characters for inbox zero celebration
+const CONFETTI_CHARS: &[char] = &[
+    '★', '✦', '✧', '●', '○', '◆', '◇', '▲', '△', '♦', '♥', '♠', '♣', '✸', '✹', '✺', '❋', '❊', '✿',
+    '❀',
+];
+
+/// Rainbow colors for celebration animation
+const RAINBOW_COLORS: &[Color] = &[
+    Color::Red,
+    Color::LightRed,
+    Color::Yellow,
+    Color::LightYellow,
+    Color::Green,
+    Color::LightGreen,
+    Color::Cyan,
+    Color::LightCyan,
+    Color::Blue,
+    Color::LightBlue,
+    Color::Magenta,
+    Color::LightMagenta,
+];
+
 /// Tracks viewport heights for each view to enable half-page scrolling
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ViewportHeights {
@@ -102,6 +124,8 @@ pub struct UiState {
     pub busy: bool,
     /// Frame counter for spinner animation
     pub spinner_frame: usize,
+    /// Frame counter for celebration animation (faster than spinner)
+    pub celebration_frame: usize,
     /// Viewport heights for half-page scrolling
     pub viewport_heights: ViewportHeights,
     /// Scroll offset for group list (manual scrolling since it uses custom rendering)
@@ -157,6 +181,11 @@ impl UiState {
     /// Advance the spinner animation frame
     pub fn tick_spinner(&mut self) {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+    }
+
+    /// Advance the celebration animation frame
+    pub fn tick_celebration(&mut self) {
+        self.celebration_frame = self.celebration_frame.wrapping_add(1);
     }
 
     /// Get the current spinner character
@@ -299,6 +328,152 @@ impl Widget for StatusModalWidget<'_> {
             )),
             inner.width,
         );
+    }
+}
+
+/// Widget for the inbox zero celebration screen
+pub struct InboxZeroWidget {
+    frame: usize,
+}
+
+impl InboxZeroWidget {
+    pub fn new(frame: usize) -> Self {
+        Self { frame }
+    }
+
+    /// Generate pseudo-random confetti positions based on frame and seed
+    /// Animation is slowed down to be gentle on the eyes
+    fn confetti_position(&self, seed: usize, width: u16, height: u16) -> (u16, u16, char, Color) {
+        // Use a simple hash for deterministic base positions (doesn't change with frame)
+        let hash = seed.wrapping_mul(2654435761);
+
+        // Stable base positions derived from hash
+        let base_y = (hash % height as usize) as u16;
+        let base_x = ((hash / 1000) % width as usize) as u16;
+
+        // Falling motion
+        let fall_speed = ((hash / 100) % 3) as u16 + 1;
+        let y_offset = (self.frame as u16).wrapping_mul(fall_speed) / 10;
+        let y = (base_y.wrapping_add(y_offset)) % height;
+
+        // Horizontal drift
+        let drift = ((self.frame / 20 + seed) % 7) as i16 - 3;
+        let x = ((base_x as i16 + drift).rem_euclid(width as i16)) as u16;
+
+        // Pick confetti character (stable) and color (cycles very slowly)
+        let char_idx = (hash / 10000) % CONFETTI_CHARS.len();
+        let color_idx = (hash / 100000 + self.frame / 120) % RAINBOW_COLORS.len();
+
+        (x, y, CONFETTI_CHARS[char_idx], RAINBOW_COLORS[color_idx])
+    }
+}
+
+impl Widget for InboxZeroWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        // Clear the entire area with a subtle background
+        for row in area.y..area.y + area.height {
+            for col in area.x..area.x + area.width {
+                buf[(col, row)].set_char(' ');
+                buf[(col, row)].set_style(Style::default());
+            }
+        }
+
+        // Draw border with cycling color
+        let block = Block::default().borders(Borders::ALL).border_style(
+            Style::default().fg(RAINBOW_COLORS[(self.frame / 5) % RAINBOW_COLORS.len()]),
+        );
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        // Generate confetti particles
+        let num_confetti = ((inner.width as usize * inner.height as usize) / 15).min(100);
+        for seed in 0..num_confetti {
+            let (x, y, ch, color) = self.confetti_position(seed, inner.width, inner.height);
+            if x < inner.width && y < inner.height {
+                let cell = &mut buf[(inner.x + x, inner.y + y)];
+                cell.set_char(ch);
+                cell.set_style(Style::default().fg(color));
+            }
+        }
+
+        // Main celebration message
+        let messages = [
+            "🎉 INBOX ZERO! 🎉",
+            "✨ You did it! ✨",
+            "",
+            "All emails processed!",
+            "",
+            "Press 'r' to refresh",
+            "Press 'q' to quit",
+        ];
+
+        let center_y = inner.y + inner.height / 2;
+        let start_y = center_y.saturating_sub(messages.len() as u16 / 2);
+
+        for (i, msg) in messages.iter().enumerate() {
+            if msg.is_empty() {
+                continue;
+            }
+
+            let y = start_y + i as u16;
+            if y >= inner.y + inner.height {
+                break;
+            }
+
+            // Calculate display width accounting for emojis
+            let display_width = unicode_width::UnicodeWidthStr::width(*msg) as u16;
+            let x = inner.x + inner.width.saturating_sub(display_width) / 2;
+
+            // Style based on which line
+            let style = if i == 0 {
+                // Main "INBOX ZERO!" message - cycling rainbow colors
+                let color_idx = (self.frame / 5) % RAINBOW_COLORS.len();
+                Style::default()
+                    .fg(RAINBOW_COLORS[color_idx])
+                    .add_modifier(Modifier::BOLD)
+            } else if i == 1 {
+                // Secondary message - slightly offset from main
+                let color_idx = (self.frame / 5 + 3) % RAINBOW_COLORS.len();
+                Style::default()
+                    .fg(RAINBOW_COLORS[color_idx])
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                // Other messages - subtle white
+                Style::default().fg(Color::White)
+            };
+
+            buf.set_line(x, y, &Line::from(Span::styled(*msg, style)), inner.width);
+        }
+
+        // Add some sparkles around the edges (far from text to avoid overlap)
+        let sparkle_positions = [
+            (2, 2),                                                // top-left area
+            (inner.width as i16 - 3, 2),                           // top-right area
+            (2, inner.height as i16 - 3),                          // bottom-left area
+            (inner.width as i16 - 3, inner.height as i16 - 3),     // bottom-right area
+            (inner.width as i16 / 4, 1),                           // top area
+            (inner.width as i16 * 3 / 4, inner.height as i16 - 2), // bottom area
+        ];
+
+        let sparkle_chars = ['✦', '✧', '★', '✸', '✹'];
+
+        for (i, (px, py)) in sparkle_positions.iter().enumerate() {
+            let x = inner.x as i16 + px;
+            let y = inner.y as i16 + py;
+
+            if x >= inner.x as i16
+                && x < (inner.x + inner.width) as i16
+                && y >= inner.y as i16
+                && y < (inner.y + inner.height) as i16
+            {
+                // Sparkles cycle with the border/text
+                let char_idx = (self.frame / 8 + i) % sparkle_chars.len();
+                let color_idx = (self.frame / 5 + i * 2) % RAINBOW_COLORS.len();
+                let cell = &mut buf[(x as u16, y as u16)];
+                cell.set_char(sparkle_chars[char_idx]);
+                cell.set_style(Style::default().fg(RAINBOW_COLORS[color_idx]));
+            }
+        }
     }
 }
 
@@ -727,10 +902,15 @@ impl Widget for HelpBarWidget<'_> {
 
         let help_text = match self.app.view {
             View::GroupList => {
-                format!(
-                    "j/↓: next | k/↑: prev | Enter: open | t: threads only | m: toggle mode | r: refresh{} | q: quit",
-                    undo_hint
-                )
+                if self.app.groups.is_empty() {
+                    // Inbox zero - simplified help
+                    format!("r: refresh{} | q: quit", undo_hint)
+                } else {
+                    format!(
+                        "j/↓: next | k/↑: prev | Enter: open | t: threads only | m: toggle mode | r: refresh{} | q: quit",
+                        undo_hint
+                    )
+                }
             }
             View::EmailList => {
                 format!(
