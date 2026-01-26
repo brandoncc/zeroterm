@@ -329,6 +329,60 @@ impl App {
         }
     }
 
+    /// Ensures the current selection is valid for the current view and filter settings.
+    /// Call this before rendering to guarantee the selection points to a visible item.
+    pub fn ensure_valid_selection(&mut self) {
+        match self.view {
+            View::GroupList => {
+                let filtered = self.filtered_groups();
+                if filtered.is_empty() {
+                    return;
+                }
+                // Check if current selection is visible
+                let current_group = self.groups.get(self.selected_group);
+                let is_visible = current_group
+                    .is_some_and(|g| filtered.iter().any(|fg| fg.key == g.key));
+                if !is_visible {
+                    // Select the first visible group
+                    if let Some(first) = filtered.first() {
+                        self.selected_group = self
+                            .groups
+                            .iter()
+                            .position(|g| g.key == first.key)
+                            .unwrap_or(0);
+                    }
+                }
+            }
+            View::EmailList => {
+                let filtered = self.filtered_threads_in_current_group();
+                if filtered.is_empty() {
+                    self.selected_email = None;
+                } else if self.selected_email.is_none()
+                    || self.selected_email.is_some_and(|idx| idx >= filtered.len())
+                {
+                    self.selected_email = Some(0);
+                }
+            }
+            View::Thread => {
+                let thread_emails = self.current_thread_emails();
+                if thread_emails.is_empty() {
+                    self.selected_thread_email = None;
+                } else if self.selected_thread_email.is_none()
+                    || self.selected_thread_email.is_some_and(|idx| idx >= thread_emails.len())
+                {
+                    self.selected_thread_email = Some(0);
+                }
+            }
+            View::UndoHistory => {
+                if self.undo_history.is_empty() {
+                    self.selected_undo = 0;
+                } else if self.selected_undo >= self.undo_history.len() {
+                    self.selected_undo = self.undo_history.len() - 1;
+                }
+            }
+        }
+    }
+
     /// Selects the next group in the list
     fn select_next_group(&mut self) {
         if self.filter_to_threads {
@@ -1569,5 +1623,64 @@ mod tests {
             subject: "Thread Subject".to_string(),
         };
         assert!(matches!(thread, UndoContext::Thread { .. }));
+    }
+
+    #[test]
+    fn test_ensure_valid_selection_snaps_to_visible_group() {
+        // Regression test: ensure_valid_selection should snap selection to a
+        // visible group when the current selection is filtered out
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Multi-message thread for alice
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
+            // Single-message emails for bob and charlie (no threads)
+            create_test_email_with_thread("3", "thread_b", "bob@example.com"),
+            create_test_email_with_thread("4", "thread_c", "charlie@example.com"),
+        ]);
+
+        // Enable thread filter - only alice should be visible
+        app.toggle_thread_filter();
+        assert_eq!(app.filtered_groups().len(), 1);
+
+        // Manually set selected_group to bob's index (simulating what happens
+        // after deleting alice's emails - the app advances to next group)
+        let bob_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "bob@example.com")
+            .unwrap();
+        app.selected_group = bob_idx;
+
+        // Before ensure_valid_selection, selection points to hidden group
+        assert_eq!(app.current_group().unwrap().key, "bob@example.com");
+
+        // After ensure_valid_selection, selection should snap to visible group
+        app.ensure_valid_selection();
+        assert_eq!(
+            app.current_group().unwrap().key,
+            "alice@example.com",
+            "Selection should snap to visible group"
+        );
+    }
+
+    #[test]
+    fn test_ensure_valid_selection_clamps_email_index() {
+        // Test that ensure_valid_selection clamps email selection when out of bounds
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_b", "alice@example.com"),
+        ]);
+
+        app.enter(); // Enter email list
+        app.selected_email = Some(10); // Set to invalid index
+
+        app.ensure_valid_selection();
+        assert_eq!(
+            app.selected_email,
+            Some(0),
+            "Selection should snap to first email when out of bounds"
+        );
     }
 }
