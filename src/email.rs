@@ -15,8 +15,10 @@ pub struct Email {
     pub date: DateTime<Utc>,
     /// The Message-ID header value
     pub message_id: Option<String>,
-    /// The In-Reply-To header value (references parent message)
+    /// The In-Reply-To header value (references immediate parent)
     pub in_reply_to: Option<String>,
+    /// The References header (list of all Message-IDs in the conversation chain)
+    pub references: Vec<String>,
 }
 
 impl Email {
@@ -43,6 +45,7 @@ impl Email {
             date,
             message_id: None,
             in_reply_to: None,
+            references: Vec::new(),
         }
     }
 
@@ -55,6 +58,7 @@ impl Email {
         date: DateTime<Utc>,
         message_id: Option<String>,
         in_reply_to: Option<String>,
+        references: Vec<String>,
     ) -> Self {
         let from_email = extract_email(&from);
         let from_domain = extract_domain(&from_email);
@@ -70,6 +74,7 @@ impl Email {
             date,
             message_id,
             in_reply_to,
+            references,
         }
     }
 }
@@ -96,7 +101,7 @@ pub fn extract_domain(email: &str) -> String {
         .to_string()
 }
 
-/// Builds thread IDs for a collection of emails using Message-ID and In-Reply-To headers.
+/// Builds thread IDs for a collection of emails using Message-ID, In-Reply-To, and References headers.
 /// Uses a union-find algorithm to group connected emails into threads.
 pub fn build_thread_ids(emails: &mut [Email]) {
     if emails.is_empty() {
@@ -114,10 +119,18 @@ pub fn build_thread_ids(emails: &mut [Email]) {
     // Union-find parent array
     let mut parent: Vec<usize> = (0..emails.len()).collect();
 
-    // Union emails that are connected via In-Reply-To
+    // Union emails that are connected via In-Reply-To or References
     for (i, email) in emails.iter().enumerate() {
+        // Check In-Reply-To
         if let Some(ref reply_to) = email.in_reply_to {
             if let Some(&j) = msg_id_to_idx.get(reply_to) {
+                union(&mut parent, i, j);
+            }
+        }
+
+        // Check all References - this connects emails even when intermediate messages are missing
+        for reference in &email.references {
+            if let Some(&j) = msg_id_to_idx.get(reference) {
                 union(&mut parent, i, j);
             }
         }
@@ -252,6 +265,7 @@ mod tests {
                 date,
                 Some("<msg1@example.com>".to_string()),
                 None,
+                Vec::new(),
             ),
         ];
 
@@ -271,6 +285,7 @@ mod tests {
                 date,
                 Some("<msg1@example.com>".to_string()),
                 None,
+                Vec::new(),
             ),
             Email::with_headers(
                 "2".to_string(),
@@ -280,6 +295,7 @@ mod tests {
                 date,
                 Some("<msg2@example.com>".to_string()),
                 Some("<msg1@example.com>".to_string()),
+                Vec::new(),
             ),
         ];
 
@@ -300,6 +316,7 @@ mod tests {
                 date,
                 Some("<msg1@example.com>".to_string()),
                 None,
+                Vec::new(),
             ),
             Email::with_headers(
                 "2".to_string(),
@@ -309,6 +326,7 @@ mod tests {
                 date,
                 Some("<msg2@example.com>".to_string()),
                 None,
+                Vec::new(),
             ),
         ];
 
@@ -329,6 +347,7 @@ mod tests {
                 date,
                 Some("<msg1@example.com>".to_string()),
                 None,
+                Vec::new(),
             ),
             Email::with_headers(
                 "2".to_string(),
@@ -338,6 +357,7 @@ mod tests {
                 date,
                 Some("<msg2@example.com>".to_string()),
                 Some("<msg1@example.com>".to_string()),
+                Vec::new(),
             ),
             Email::with_headers(
                 "3".to_string(),
@@ -347,6 +367,7 @@ mod tests {
                 date,
                 Some("<msg3@example.com>".to_string()),
                 Some("<msg2@example.com>".to_string()),
+                Vec::new(),
             ),
         ];
 
@@ -354,5 +375,40 @@ mod tests {
         // All three should have the same thread ID
         assert_eq!(emails[0].thread_id, emails[1].thread_id);
         assert_eq!(emails[1].thread_id, emails[2].thread_id);
+    }
+
+    #[test]
+    fn test_build_thread_ids_with_references() {
+        // Test that References header can connect emails even when intermediate is missing
+        let date = Utc::now();
+        let mut emails = vec![
+            // Original email
+            Email::with_headers(
+                "1".to_string(),
+                "alice@example.com".to_string(),
+                "Subject".to_string(),
+                "Original".to_string(),
+                date,
+                Some("<msg1@example.com>".to_string()),
+                None,
+                Vec::new(),
+            ),
+            // Reply 3 - intermediate reply (msg2) is missing from inbox
+            // But References header contains the full chain
+            Email::with_headers(
+                "3".to_string(),
+                "charlie@example.com".to_string(),
+                "Re: Subject".to_string(),
+                "Reply to missing email".to_string(),
+                date,
+                Some("<msg3@example.com>".to_string()),
+                Some("<msg2@example.com>".to_string()), // This won't match (msg2 not in inbox)
+                vec!["<msg1@example.com>".to_string(), "<msg2@example.com>".to_string()],
+            ),
+        ];
+
+        build_thread_ids(&mut emails);
+        // Should be in same thread because References contains msg1
+        assert_eq!(emails[0].thread_id, emails[1].thread_id);
     }
 }

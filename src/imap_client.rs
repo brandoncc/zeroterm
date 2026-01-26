@@ -78,11 +78,11 @@ impl ImapClient {
             .and_then(|s| parse_email_date(&s))
             .unwrap_or_else(Utc::now);
 
-        // Parse headers for Message-ID and In-Reply-To
-        let (message_id, in_reply_to) = fetch
+        // Parse headers for Message-ID, In-Reply-To, and References
+        let (message_id, in_reply_to, references) = fetch
             .header()
             .map(|h| parse_threading_headers(h))
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, Vec::new()));
 
         // Create snippet from first part of subject for now
         // (full body parsing would require fetching BODY[TEXT])
@@ -96,6 +96,7 @@ impl ImapClient {
             date,
             message_id,
             in_reply_to,
+            references,
         ))
     }
 
@@ -180,22 +181,67 @@ fn decode_header_value(value: &[u8]) -> String {
     value_str.to_string()
 }
 
-/// Parses Message-ID and In-Reply-To headers from raw header bytes
-fn parse_threading_headers(headers: &[u8]) -> (Option<String>, Option<String>) {
+/// Parses Message-ID, In-Reply-To, and References headers from raw header bytes
+fn parse_threading_headers(headers: &[u8]) -> (Option<String>, Option<String>, Vec<String>) {
     let headers_str = String::from_utf8_lossy(headers);
     let mut message_id = None;
     let mut in_reply_to = None;
+    let mut references = Vec::new();
 
-    for line in headers_str.lines() {
+    // Unfold headers (RFC 5322: folded headers have whitespace continuation)
+    let unfolded = headers_str.replace("\r\n ", " ").replace("\r\n\t", " ");
+
+    for line in unfolded.lines() {
         let line_lower = line.to_lowercase();
         if line_lower.starts_with("message-id:") {
             message_id = Some(line[11..].trim().to_string());
         } else if line_lower.starts_with("in-reply-to:") {
             in_reply_to = Some(line[12..].trim().to_string());
+        } else if line_lower.starts_with("references:") {
+            // References is a space-separated list of Message-IDs
+            let refs_str = line[11..].trim();
+            references = parse_message_id_list(refs_str);
         }
     }
 
-    (message_id, in_reply_to)
+    (message_id, in_reply_to, references)
+}
+
+/// Parses a space-separated list of Message-IDs (used for References header)
+fn parse_message_id_list(s: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut current = String::new();
+    let mut in_angle = false;
+
+    for c in s.chars() {
+        match c {
+            '<' => {
+                in_angle = true;
+                current.push(c);
+            }
+            '>' => {
+                current.push(c);
+                in_angle = false;
+                if !current.is_empty() {
+                    ids.push(current.trim().to_string());
+                    current = String::new();
+                }
+            }
+            ' ' | '\t' if !in_angle => {
+                // Skip whitespace between Message-IDs
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+
+    // Handle any remaining content (shouldn't happen with well-formed headers)
+    if !current.is_empty() {
+        ids.push(current.trim().to_string());
+    }
+
+    ids
 }
 
 /// Parses an email date string into a DateTime
@@ -257,17 +303,42 @@ mod tests {
     #[test]
     fn test_parse_threading_headers() {
         let headers = b"Message-ID: <abc123@example.com>\r\nIn-Reply-To: <def456@example.com>\r\n";
-        let (msg_id, reply_to) = parse_threading_headers(headers);
+        let (msg_id, reply_to, refs) = parse_threading_headers(headers);
         assert_eq!(msg_id, Some("<abc123@example.com>".to_string()));
         assert_eq!(reply_to, Some("<def456@example.com>".to_string()));
+        assert!(refs.is_empty());
     }
 
     #[test]
     fn test_parse_threading_headers_no_reply() {
         let headers = b"Message-ID: <abc123@example.com>\r\nSubject: Test\r\n";
-        let (msg_id, reply_to) = parse_threading_headers(headers);
+        let (msg_id, reply_to, refs) = parse_threading_headers(headers);
         assert_eq!(msg_id, Some("<abc123@example.com>".to_string()));
         assert_eq!(reply_to, None);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_threading_headers_with_references() {
+        let headers = b"Message-ID: <msg3@example.com>\r\nIn-Reply-To: <msg2@example.com>\r\nReferences: <msg1@example.com> <msg2@example.com>\r\n";
+        let (msg_id, reply_to, refs) = parse_threading_headers(headers);
+        assert_eq!(msg_id, Some("<msg3@example.com>".to_string()));
+        assert_eq!(reply_to, Some("<msg2@example.com>".to_string()));
+        assert_eq!(refs, vec!["<msg1@example.com>", "<msg2@example.com>"]);
+    }
+
+    #[test]
+    fn test_parse_message_id_list() {
+        let list = "<msg1@example.com> <msg2@example.com> <msg3@example.com>";
+        let ids = parse_message_id_list(list);
+        assert_eq!(ids, vec!["<msg1@example.com>", "<msg2@example.com>", "<msg3@example.com>"]);
+    }
+
+    #[test]
+    fn test_parse_message_id_list_with_extra_whitespace() {
+        let list = "  <msg1@example.com>   <msg2@example.com>  ";
+        let ids = parse_message_id_list(list);
+        assert_eq!(ids, vec!["<msg1@example.com>", "<msg2@example.com>"]);
     }
 
     // Mock client tests
