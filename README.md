@@ -85,11 +85,7 @@ Zeroterm connects to Gmail via IMAP using an App Password.
 
 ### 1. Create a Gmail App Password
 
-1. Go to your [Google Account](https://myaccount.google.com/)
-2. Navigate to Security → 2-Step Verification (must be enabled)
-3. At the bottom, click "App passwords"
-4. Create a new app password for "Mail"
-5. Copy the 16-character password
+Follow the official guide: [Sign in with app passwords](https://support.google.com/accounts/answer/185833)
 
 ### 2. Create the credentials file
 
