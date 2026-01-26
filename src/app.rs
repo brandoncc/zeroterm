@@ -696,6 +696,12 @@ impl App {
         }
     }
 
+    /// Restores emails back into the app (for undo support)
+    pub fn restore_emails(&mut self, emails: Vec<Email>) {
+        self.emails.extend(emails);
+        self.regroup();
+    }
+
     /// Gets all email IDs and source folders in the current group
     pub fn current_group_email_ids(&self) -> Vec<(String, String)> {
         self.current_group()
