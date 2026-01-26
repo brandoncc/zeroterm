@@ -317,6 +317,14 @@ impl App {
         senders.len() > 1
     }
 
+    /// Checks if any email in a group is part of a multi-sender thread
+    pub fn group_has_multi_sender_threads(&self, group: &EmailGroup) -> bool {
+        group
+            .emails
+            .iter()
+            .any(|email| self.thread_has_multiple_senders(&email.thread_id))
+    }
+
     /// Gets the thread IDs for emails in the current group
     pub fn current_group_thread_ids(&self) -> HashSet<String> {
         self.current_group()
@@ -948,5 +956,31 @@ mod tests {
         let email2_id = app.current_thread_email().map(|e| e.id.clone());
         assert!(email2_id.is_some());
         assert_ne!(email_id, email2_id);
+    }
+
+    #[test]
+    fn test_group_has_multi_sender_threads() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Thread with multiple senders
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            // Thread with single sender
+            create_test_email_with_thread("3", "thread_b", "charlie@example.com"),
+        ]);
+
+        let alice_group = app
+            .groups
+            .iter()
+            .find(|g| g.key == "alice@example.com")
+            .unwrap();
+        assert!(app.group_has_multi_sender_threads(alice_group));
+
+        let charlie_group = app
+            .groups
+            .iter()
+            .find(|g| g.key == "charlie@example.com")
+            .unwrap();
+        assert!(!app.group_has_multi_sender_threads(charlie_group));
     }
 }

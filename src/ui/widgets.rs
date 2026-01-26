@@ -294,15 +294,21 @@ impl Widget for GroupListWidget<'_> {
                 Style::default()
             };
 
+            let thread_indicator = if self.app.group_has_multi_sender_threads(group) {
+                "◈ "
+            } else {
+                "  "
+            };
+
             let thread_count = group.thread_count();
             let email_count = group.count();
             let line = if thread_count == email_count {
                 // Each email is its own thread
-                format!("{} ({} emails)", group.key, email_count)
+                format!("{}{} ({} emails)", thread_indicator, group.key, email_count)
             } else {
                 format!(
-                    "{} ({} emails in {} threads)",
-                    group.key, email_count, thread_count
+                    "{}{} ({} emails in {} threads)",
+                    thread_indicator, group.key, email_count, thread_count
                 )
             };
             let span = Span::styled(line, style);
