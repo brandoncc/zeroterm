@@ -44,6 +44,8 @@ enum ImapResponse {
     DeleteResult(Result<()>),
     MultiArchiveResult(Result<()>),
     MultiDeleteResult(Result<()>),
+    /// Progress update during bulk operations (current, total, action)
+    Progress(usize, usize, String),
     Connected,
     Error(String),
 }
@@ -203,8 +205,15 @@ fn spawn_imap_worker(
                     let _ = resp_tx.send(ImapResponse::DeleteResult(result));
                 }
                 ImapCommand::ArchiveMultiple(ids_and_folders) => {
+                    let total = ids_and_folders.len();
                     let mut result = Ok(());
-                    for (id, folder) in &ids_and_folders {
+                    for (i, (id, folder)) in ids_and_folders.iter().enumerate() {
+                        // Send progress update
+                        let _ = resp_tx.send(ImapResponse::Progress(
+                            i + 1,
+                            total,
+                            "Archiving".to_string(),
+                        ));
                         if let Err(e) = client.archive_email(id, folder) {
                             result = Err(e);
                             break;
@@ -213,8 +222,15 @@ fn spawn_imap_worker(
                     let _ = resp_tx.send(ImapResponse::MultiArchiveResult(result));
                 }
                 ImapCommand::DeleteMultiple(ids_and_folders) => {
+                    let total = ids_and_folders.len();
                     let mut result = Ok(());
-                    for (id, folder) in &ids_and_folders {
+                    for (i, (id, folder)) in ids_and_folders.iter().enumerate() {
+                        // Send progress update
+                        let _ = resp_tx.send(ImapResponse::Progress(
+                            i + 1,
+                            total,
+                            "Deleting".to_string(),
+                        ));
                         if let Err(e) = client.delete_email(id, folder) {
                             result = Err(e);
                             break;
@@ -362,6 +378,9 @@ fn run_app(
                         }
                     }
                     ui_state.clear_busy();
+                }
+                ImapResponse::Progress(current, total, action) => {
+                    ui_state.update_busy_message(format!("{} {} of {}...", action, current, total));
                 }
                 _ => {}
             }
