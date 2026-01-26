@@ -265,6 +265,8 @@ fn run_app(
 
     // Track pending operations
     let mut pending_operation: Option<PendingOp> = None;
+    // Track pending 'g' for gg sequence
+    let mut pending_g = false;
 
     // Main event loop
     loop {
@@ -381,6 +383,12 @@ fn run_app(
                 continue;
             }
 
+            // Clear pending g for any key that's not part of the gg sequence
+            let is_g_sequence = matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G'));
+            if !is_g_sequence {
+                pending_g = false;
+            }
+
             // Normal input handling
             match key.code {
                 KeyCode::Char('q') => {
@@ -422,6 +430,20 @@ fn run_app(
                     }
                 }
                 KeyCode::Char('g') => {
+                    if pending_g {
+                        // gg - go to top
+                        app.select_first();
+                        pending_g = false;
+                    } else {
+                        // First g - wait for second g
+                        pending_g = true;
+                    }
+                }
+                KeyCode::Char('G') => {
+                    pending_g = false;
+                    app.select_last();
+                }
+                KeyCode::Char('m') => {
                     app.toggle_group_mode();
                 }
                 KeyCode::Char('r') => {
