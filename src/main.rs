@@ -303,6 +303,23 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
+            // Handle help menu
+            if ui_state.is_showing_help() {
+                match key.code {
+                    KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => {
+                        ui_state.hide_help();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Toggle help menu with ?
+            if key.code == KeyCode::Char('?') {
+                ui_state.show_help();
+                continue;
+            }
+
             // Clear pending g for any key that's not part of the gg sequence
             let is_g_sequence = matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G'));
             if !is_g_sequence {
@@ -1119,6 +1136,23 @@ fn run_app(
             if ui_state.has_status() {
                 ui_state.clear_status();
                 continue; // Consume the key press
+            }
+
+            // Handle help menu
+            if ui_state.is_showing_help() {
+                match key.code {
+                    KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => {
+                        ui_state.hide_help();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Toggle help menu with ?
+            if key.code == KeyCode::Char('?') {
+                ui_state.show_help();
+                continue;
             }
 
             // Clear pending g for any key that's not part of the gg sequence

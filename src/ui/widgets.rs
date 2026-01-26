@@ -132,6 +132,8 @@ pub struct UiState {
     pub group_scroll_offset: usize,
     /// Scroll offset for undo history list
     pub undo_scroll_offset: usize,
+    /// When true, the help menu is displayed
+    pub show_help: bool,
 }
 
 impl UiState {
@@ -201,6 +203,21 @@ impl UiState {
     /// Returns true if there's a status message to display
     pub fn has_status(&self) -> bool {
         self.status_message.is_some()
+    }
+
+    /// Show the help menu
+    pub fn show_help(&mut self) {
+        self.show_help = true;
+    }
+
+    /// Hide the help menu
+    pub fn hide_help(&mut self) {
+        self.show_help = false;
+    }
+
+    /// Returns true if the help menu is displayed
+    pub fn is_showing_help(&self) -> bool {
+        self.show_help
     }
 }
 
@@ -894,44 +911,184 @@ impl<'a> HelpBarWidget<'a> {
 
 impl Widget for HelpBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let undo_hint = if self.app.undo_history_len() > 0 {
-            " | u: undo"
-        } else {
-            ""
-        };
-
         let help_text = match self.app.view {
             View::GroupList => {
                 if self.app.groups.is_empty() {
-                    // Inbox zero - simplified help
-                    format!("r: refresh{} | q: quit", undo_hint)
+                    "r: refresh  q: quit  ?: more"
                 } else {
-                    format!(
-                        "j/↓: next | k/↑: prev | Enter: open | t: threads only | m: toggle mode | r: refresh{} | q: quit",
-                        undo_hint
-                    )
+                    "j/k: navigate  Enter: open  q: quit  ?: more"
                 }
             }
-            View::EmailList => {
-                format!(
-                    "j/↓: next | k/↑: prev | Enter: thread | a/A: archive | d/D: delete | t: threads only | m: toggle{} | q: back",
-                    undo_hint
-                )
-            }
-            View::Thread => {
-                format!(
-                    "j/↓: next | k/↑: prev | Enter: browser | A: archive | D: delete{} | q: back",
-                    undo_hint
-                )
-            }
-            View::UndoHistory => {
-                "j/↓: next | k/↑: prev | Enter: undo selected | q: back".to_string()
-            }
+            View::EmailList => "j/k: navigate  Enter: open  a/d: archive/delete  q: back  ?: more",
+            View::Thread => "j/k: navigate  Enter: browser  A/D: archive/delete  q: back  ?: more",
+            View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
         };
 
         let paragraph = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
 
         paragraph.render(area, buf);
+    }
+}
+
+/// Widget for the full help menu modal
+pub struct HelpMenuWidget {
+    view: View,
+}
+
+impl HelpMenuWidget {
+    pub fn new(view: View) -> Self {
+        Self { view }
+    }
+
+    fn help_sections(&self) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+        let nav = (
+            "Navigation",
+            vec![
+                ("j / ↓", "Move down"),
+                ("k / ↑", "Move up"),
+                ("g g", "Go to top"),
+                ("G", "Go to bottom"),
+                ("Ctrl+d", "Half page down"),
+                ("Ctrl+u", "Half page up"),
+            ],
+        );
+
+        match self.view {
+            View::GroupList => vec![
+                nav,
+                (
+                    "Actions",
+                    vec![
+                        ("Enter", "Open group"),
+                        ("m", "Toggle email/domain mode"),
+                        ("t", "Toggle threads only"),
+                        ("r", "Refresh"),
+                        ("u", "Undo history"),
+                    ],
+                ),
+                ("General", vec![("q", "Quit"), ("?", "Toggle this help")]),
+            ],
+            View::EmailList => vec![
+                nav,
+                (
+                    "Actions",
+                    vec![
+                        ("Enter", "View thread"),
+                        ("a", "Archive email"),
+                        ("A", "Archive all in group"),
+                        ("d", "Delete email"),
+                        ("D", "Delete all in group"),
+                        ("m", "Toggle email/domain mode"),
+                        ("t", "Toggle threads only"),
+                        ("u", "Undo history"),
+                    ],
+                ),
+                ("General", vec![("q", "Back"), ("?", "Toggle this help")]),
+            ],
+            View::Thread => vec![
+                nav,
+                (
+                    "Actions",
+                    vec![
+                        ("Enter", "Open in browser"),
+                        ("A", "Archive thread"),
+                        ("D", "Delete thread"),
+                        ("u", "Undo history"),
+                    ],
+                ),
+                ("General", vec![("q", "Back"), ("?", "Toggle this help")]),
+            ],
+            View::UndoHistory => vec![
+                nav,
+                ("Actions", vec![("Enter", "Undo selected action")]),
+                ("General", vec![("q", "Back"), ("?", "Toggle this help")]),
+            ],
+        }
+    }
+}
+
+impl Widget for HelpMenuWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let help_sections = self.help_sections();
+
+        // Calculate height dynamically based on content
+        let content_lines: usize = help_sections
+            .iter()
+            .map(|(_, items)| 1 + items.len() + 1) // header + items + blank line
+            .sum();
+        let box_height = (content_lines + 2 + 2) as u16; // content + borders + padding
+
+        let box_width = 44_u16;
+
+        // Center the box
+        let x = area.x + (area.width.saturating_sub(box_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(box_height)) / 2;
+
+        let modal_area = Rect::new(x, y, box_width, box_height);
+
+        // Clear the area behind the modal
+        for row in modal_area.y..modal_area.y + modal_area.height {
+            for col in modal_area.x..modal_area.x + modal_area.width {
+                buf[(col, row)].set_char(' ');
+                buf[(col, row)].set_style(Style::default());
+            }
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Help ")
+            .border_style(Style::default().fg(Color::Cyan));
+
+        let inner = block.inner(modal_area);
+        block.render(modal_area, buf);
+
+        // Start with 1 line of padding at top
+        let mut current_y = inner.y + 1;
+
+        for (section_title, bindings) in help_sections {
+            // Section header
+            buf.set_line(
+                inner.x + 1,
+                current_y,
+                &Line::from(Span::styled(
+                    section_title,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                inner.width.saturating_sub(2),
+            );
+            current_y += 1;
+
+            // Key bindings
+            for (key, desc) in bindings {
+                let key_span =
+                    Span::styled(format!("{:>10}", key), Style::default().fg(Color::Cyan));
+                let sep_span = Span::raw("  ");
+                let desc_span = Span::styled(desc, Style::default().fg(Color::White));
+
+                buf.set_line(
+                    inner.x + 1,
+                    current_y,
+                    &Line::from(vec![key_span, sep_span, desc_span]),
+                    inner.width.saturating_sub(2),
+                );
+                current_y += 1;
+            }
+
+            current_y += 1; // Space between sections
+        }
+
+        // Footer hint
+        let footer_y = modal_area.y + modal_area.height - 2;
+        let footer = "Press ? or Esc to close";
+        let footer_x = inner.x + (inner.width.saturating_sub(footer.len() as u16)) / 2;
+        buf.set_line(
+            footer_x,
+            footer_y,
+            &Line::from(Span::styled(footer, Style::default().fg(Color::DarkGray))),
+            inner.width,
+        );
     }
 }
 

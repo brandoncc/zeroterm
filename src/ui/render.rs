@@ -7,8 +7,8 @@ use ratatui::{
 use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
-    GroupListWidget, HelpBarWidget, InboxZeroWidget, StatusModalWidget, ThreadViewWidget, UiState,
-    UndoHistoryWidget,
+    GroupListWidget, HelpBarWidget, HelpMenuWidget, InboxZeroWidget, StatusModalWidget,
+    ThreadViewWidget, UiState, UndoHistoryWidget,
 };
 
 /// Renders the entire application UI
@@ -118,6 +118,12 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
     if let Some(action) = &ui_state.confirm_action {
         let dialog = ConfirmDialogWidget::new(action);
         frame.render_widget(dialog, frame.area());
+    }
+
+    // Render help menu if active
+    if ui_state.is_showing_help() {
+        let help_menu = HelpMenuWidget::new(app.view);
+        frame.render_widget(help_menu, frame.area());
     }
 
     // Render busy modal if active (takes priority over confirmation)
