@@ -509,7 +509,10 @@ fn handle_archive(
 /// Handles the 'A' key - archive all in group
 fn handle_archive_all(app: &App, ui_state: &mut UiState) {
     match app.view {
-        View::GroupList | View::EmailList => {
+        View::GroupList => {
+            // No 'A' in group list view to prevent accidental bulk operations
+        }
+        View::EmailList => {
             if let Some(group) = app.current_group() {
                 let impact = app.current_group_thread_impact();
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
@@ -560,7 +563,10 @@ fn handle_delete(
 /// Handles the 'D' key - delete all in group
 fn handle_delete_all(app: &App, ui_state: &mut UiState) {
     match app.view {
-        View::GroupList | View::EmailList => {
+        View::GroupList => {
+            // No 'D' in group list view to prevent accidental bulk operations
+        }
+        View::EmailList => {
             if let Some(group) = app.current_group() {
                 let impact = app.current_group_thread_impact();
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
