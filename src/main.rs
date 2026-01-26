@@ -25,7 +25,7 @@ use config::AccountConfig;
 use email::Email;
 use imap_client::{EmailClient, ImapClient};
 use ui::render::{render, render_account_select};
-use ui::widgets::{AccountSelection, ConfirmAction, UiState};
+use ui::widgets::{AccountSelection, ConfirmAction, UiState, WARNING_CHAR};
 
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
@@ -88,7 +88,7 @@ fn main() -> Result<()> {
 
     // User may have quit during account selection
     let result = if let Some(account) = selected_account {
-        run_app(&mut terminal, account)
+        run_app(&mut terminal, account, cfg.protect_threads)
     } else {
         Ok(())
     };
@@ -236,6 +236,7 @@ fn spawn_imap_worker(
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     account: (String, AccountConfig),
+    protect_threads: bool,
 ) -> Result<()> {
     let (account_name, account_config) = account;
     let user_email = account_config.email.clone();
@@ -401,6 +402,12 @@ fn run_app(
                 continue;
             }
 
+            // Clear status message on any key press
+            if ui_state.has_status() {
+                ui_state.clear_status();
+                continue; // Consume the key press
+            }
+
             // Clear pending g for any key that's not part of the gg sequence
             let is_g_sequence = matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G'));
             if !is_g_sequence {
@@ -469,16 +476,28 @@ fn run_app(
                     cmd_tx.send(ImapCommand::FetchInbox)?;
                 }
                 KeyCode::Char('a') => {
-                    handle_archive(&mut app, &cmd_tx, &mut ui_state, &mut pending_operation)?;
+                    handle_archive(
+                        &mut app,
+                        &cmd_tx,
+                        &mut ui_state,
+                        &mut pending_operation,
+                        protect_threads,
+                    )?;
                 }
                 KeyCode::Char('A') => {
-                    handle_archive_all(&app, &mut ui_state);
+                    handle_archive_all(&app, &mut ui_state, protect_threads);
                 }
                 KeyCode::Char('d') => {
-                    handle_delete(&mut app, &cmd_tx, &mut ui_state, &mut pending_operation)?;
+                    handle_delete(
+                        &mut app,
+                        &cmd_tx,
+                        &mut ui_state,
+                        &mut pending_operation,
+                        protect_threads,
+                    )?;
                 }
                 KeyCode::Char('D') => {
-                    handle_delete_all(&app, &mut ui_state);
+                    handle_delete_all(&app, &mut ui_state, protect_threads);
                 }
                 _ => {}
             }
@@ -504,12 +523,22 @@ fn handle_archive(
     cmd_tx: &mpsc::Sender<ImapCommand>,
     ui_state: &mut UiState,
     pending_operation: &mut Option<PendingOp>,
+    protect_threads: bool,
 ) -> Result<()> {
     match app.view {
         View::GroupList => {
             // No action on single 'a' in group list
         }
         View::EmailList => {
+            // Allow if thread has only one email (nothing else to review)
+            let thread_size = app.current_thread_emails().len();
+            if protect_threads && thread_size > 1 {
+                ui_state.set_status(format!(
+                    "{} This thread has {} emails. Press Enter to review the full thread before archiving.",
+                    WARNING_CHAR, thread_size
+                ));
+                return Ok(());
+            }
             // Archive single email (only this sender's email)
             if let Some(email) = app.current_email().cloned() {
                 ui_state.set_busy("Archiving...");
@@ -528,12 +557,19 @@ fn handle_archive(
 }
 
 /// Handles the 'A' key - archive all in group
-fn handle_archive_all(app: &App, ui_state: &mut UiState) {
+fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
         View::GroupList => {
             // No 'A' in group list view to prevent accidental bulk operations
         }
         View::EmailList => {
+            if protect_threads {
+                ui_state.set_status(format!(
+                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
+                    WARNING_CHAR
+                ));
+                return;
+            }
             if let Some(group) = app.current_group() {
                 let impact = app.current_group_thread_impact();
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
@@ -561,12 +597,22 @@ fn handle_delete(
     cmd_tx: &mpsc::Sender<ImapCommand>,
     ui_state: &mut UiState,
     pending_operation: &mut Option<PendingOp>,
+    protect_threads: bool,
 ) -> Result<()> {
     match app.view {
         View::GroupList => {
             // No action on single 'd' in group list
         }
         View::EmailList => {
+            // Allow if thread has only one email (nothing else to review)
+            let thread_size = app.current_thread_emails().len();
+            if protect_threads && thread_size > 1 {
+                ui_state.set_status(format!(
+                    "{} This thread has {} emails. Press Enter to review the full thread before deleting.",
+                    WARNING_CHAR, thread_size
+                ));
+                return Ok(());
+            }
             // Delete single email (only this sender's email)
             if let Some(email) = app.current_email().cloned() {
                 ui_state.set_busy("Deleting...");
@@ -585,12 +631,19 @@ fn handle_delete(
 }
 
 /// Handles the 'D' key - delete all in group
-fn handle_delete_all(app: &App, ui_state: &mut UiState) {
+fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
         View::GroupList => {
             // No 'D' in group list view to prevent accidental bulk operations
         }
         View::EmailList => {
+            if protect_threads {
+                ui_state.set_status(format!(
+                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
+                    WARNING_CHAR
+                ));
+                return;
+            }
             if let Some(group) = app.current_group() {
                 let impact = app.current_group_thread_impact();
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
