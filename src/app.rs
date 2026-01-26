@@ -340,8 +340,8 @@ impl App {
                 }
                 // Check if current selection is visible
                 let current_group = self.groups.get(self.selected_group);
-                let is_visible = current_group
-                    .is_some_and(|g| filtered.iter().any(|fg| fg.key == g.key));
+                let is_visible =
+                    current_group.is_some_and(|g| filtered.iter().any(|fg| fg.key == g.key));
                 if !is_visible {
                     // Select the first visible group
                     if let Some(first) = filtered.first() {
@@ -368,7 +368,9 @@ impl App {
                 if thread_emails.is_empty() {
                     self.selected_thread_email = None;
                 } else if self.selected_thread_email.is_none()
-                    || self.selected_thread_email.is_some_and(|idx| idx >= thread_emails.len())
+                    || self
+                        .selected_thread_email
+                        .is_some_and(|idx| idx >= thread_emails.len())
                 {
                     self.selected_thread_email = Some(0);
                 }
