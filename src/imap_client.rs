@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use imap::{ImapConnection, Session};
 
-use crate::email::{Email, build_thread_ids};
+use crate::email::{Email, EmailBuilder, build_thread_ids};
 
 /// Trait for email operations - allows mocking in tests
 #[cfg_attr(test, mockall::automock)]
@@ -89,22 +89,27 @@ impl ImapClient {
 
         // Create snippet from first part of subject for now
         // (full body parsing would require fetching BODY[TEXT])
-        let snippet = subject.chars().take(100).collect();
+        let snippet: String = subject.chars().take(100).collect();
 
-        Some(Email::with_headers(
-            uid.to_string(),
-            from,
-            subject,
-            snippet,
-            date,
-            message_id,
-            in_reply_to,
-            references,
-        ))
+        let mut builder = EmailBuilder::new()
+            .id(uid.to_string())
+            .from(from)
+            .subject(subject)
+            .snippet(snippet)
+            .date(date)
+            .references(references);
+
+        if let Some(msg_id) = message_id {
+            builder = builder.message_id(msg_id);
+        }
+        if let Some(reply_to) = in_reply_to {
+            builder = builder.in_reply_to(reply_to);
+        }
+
+        Some(builder.build())
     }
 
     /// Logs out and closes the connection
-    #[allow(dead_code)]
     pub fn logout(mut self) -> Result<()> {
         self.session.logout().context("Failed to logout")?;
         Ok(())
