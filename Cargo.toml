@@ -1,0 +1,20 @@
+[package]
+name = "zeroterm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+imap = "3.0.0-alpha.15"
+native-tls = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+xdg = "2.5"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+regex = "1"
+mailparse = "0.15"
+
+[dev-dependencies]
+mockall = "0.13"
