@@ -406,25 +406,27 @@ impl StatefulWidget for EmailListWidget<'_> {
         } else {
             ""
         };
-        let title = self
-            .app
-            .current_group()
-            .map(|g| {
-                let email_count = self.app.total_thread_emails_for_group(g);
-                let thread_count = g.thread_count();
-                if thread_count == email_count {
-                    format!(
-                        " Threads from {}{} — {} threads ",
-                        g.key, filter_indicator, thread_count
-                    )
-                } else {
-                    format!(
-                        " Threads from {}{} — {} threads ({} emails) ",
-                        g.key, filter_indicator, thread_count, email_count
-                    )
-                }
-            })
-            .unwrap_or_else(|| " Threads ".to_string());
+
+        // Get the title - use current group if available, otherwise use viewing_group_key
+        let title = if let Some(g) = self.app.current_group() {
+            let email_count = self.app.total_thread_emails_for_group(g);
+            let thread_count = g.thread_count();
+            if thread_count == email_count {
+                format!(
+                    " Threads from {}{} — {} threads ",
+                    g.key, filter_indicator, thread_count
+                )
+            } else {
+                format!(
+                    " Threads from {}{} — {} threads ({} emails) ",
+                    g.key, filter_indicator, thread_count, email_count
+                )
+            }
+        } else if let Some(key) = self.app.viewing_group_key() {
+            format!(" Threads from {} — 0 threads ", key)
+        } else {
+            " Threads ".to_string()
+        };
 
         let block = Block::default().borders(Borders::ALL).title(title);
 
@@ -433,6 +435,20 @@ impl StatefulWidget for EmailListWidget<'_> {
 
         // Use filtered threads (respects filter_to_threads setting)
         let filtered_threads = self.app.filtered_threads_in_current_group();
+
+        // Show message if group is empty (all emails deleted/archived)
+        if filtered_threads.is_empty() && self.app.current_group().is_none() {
+            let msg = "No messages (press Esc to go back)";
+            let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
+            let y = inner.y + inner.height / 2;
+            buf.set_line(
+                x,
+                y,
+                &Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray))),
+                inner.width,
+            );
+            return;
+        }
 
         // Show message if filter is active but no threads match
         if filtered_threads.is_empty() && self.app.filter_to_threads {
