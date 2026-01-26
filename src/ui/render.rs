@@ -7,7 +7,7 @@ use ratatui::{
 use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
-    GroupListWidget, HelpBarWidget, ThreadViewWidget, UiState,
+    GroupListWidget, HelpBarWidget, StatusModalWidget, ThreadViewWidget, UiState,
 };
 
 /// Renders the entire application UI
@@ -75,6 +75,15 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
         && let Some(msg) = &ui_state.status_message
     {
         let modal = BusyModalWidget::new(msg, ui_state.spinner_char());
+        frame.render_widget(modal, frame.area());
+    }
+
+    // Render status modal for non-busy messages (warnings, errors)
+    if !ui_state.is_busy()
+        && !ui_state.is_confirming()
+        && let Some(msg) = &ui_state.status_message
+    {
+        let modal = StatusModalWidget::new(msg);
         frame.render_widget(modal, frame.area());
     }
 }

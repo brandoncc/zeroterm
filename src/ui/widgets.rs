@@ -11,7 +11,7 @@ use crate::app::{App, GroupMode, ThreadImpact, ThreadWarning, View};
 use crate::config::AccountConfig;
 
 /// Warning indicator character for messages
-const WARNING_CHAR: char = '⚠';
+pub const WARNING_CHAR: char = '⚠';
 
 /// Format a date for display in email lists
 /// Shows time for current year, year for older emails
@@ -214,6 +214,16 @@ impl UiState {
     pub fn spinner_char(&self) -> char {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
+
+    /// Clear the status message
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
+    }
+
+    /// Returns true if there's a status message to display
+    pub fn has_status(&self) -> bool {
+        self.status_message.is_some()
+    }
 }
 
 /// Widget for the busy/loading modal overlay
@@ -269,6 +279,74 @@ impl Widget for BusyModalWidget<'_> {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
+            )),
+            inner.width,
+        );
+    }
+}
+
+/// Widget for status message modal overlay (used for warnings)
+pub struct StatusModalWidget<'a> {
+    message: &'a str,
+}
+
+impl<'a> StatusModalWidget<'a> {
+    pub fn new(message: &'a str) -> Self {
+        Self { message }
+    }
+}
+
+impl Widget for StatusModalWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        // Calculate centered box size
+        let msg_width = self.message.len() as u16 + 4;
+        let box_width = msg_width.max(20).min(area.width.saturating_sub(4));
+        let box_height = 3;
+
+        let x = area.x + (area.width.saturating_sub(box_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(box_height)) / 2;
+
+        let modal_area = Rect::new(x, y, box_width, box_height);
+
+        // Clear the area behind the modal
+        for row in modal_area.y..modal_area.y + modal_area.height {
+            for col in modal_area.x..modal_area.x + modal_area.width {
+                buf[(col, row)].set_char(' ');
+                buf[(col, row)].set_style(Style::default());
+            }
+        }
+
+        // Use yellow border for warnings
+        let border_color = if self.message.starts_with(WARNING_CHAR) {
+            Color::Yellow
+        } else {
+            Color::White
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .style(Style::default());
+
+        let inner = block.inner(modal_area);
+        block.render(modal_area, buf);
+
+        // Center the message
+        let msg_x = inner.x + (inner.width.saturating_sub(self.message.len() as u16)) / 2;
+
+        // Use yellow text for warnings
+        let text_color = if self.message.starts_with(WARNING_CHAR) {
+            Color::Yellow
+        } else {
+            Color::White
+        };
+
+        buf.set_line(
+            msg_x,
+            inner.y,
+            &Line::from(Span::styled(
+                self.message,
+                Style::default().fg(text_color).add_modifier(Modifier::BOLD),
             )),
             inner.width,
         );
@@ -659,13 +737,6 @@ impl Widget for AccountSelectWidget<'_> {
             )),
             inner.width,
         );
-    }
-}
-
-#[cfg(test)]
-impl UiState {
-    pub fn clear_status(&mut self) {
-        self.status_message = None;
     }
 }
 

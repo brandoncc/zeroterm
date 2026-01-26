@@ -25,7 +25,7 @@ use config::AccountConfig;
 use email::Email;
 use imap_client::{EmailClient, ImapClient};
 use ui::render::{render, render_account_select};
-use ui::widgets::{AccountSelection, ConfirmAction, UiState};
+use ui::widgets::{AccountSelection, ConfirmAction, UiState, WARNING_CHAR};
 
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
@@ -402,6 +402,12 @@ fn run_app(
                 continue;
             }
 
+            // Clear status message on any key press
+            if ui_state.has_status() {
+                ui_state.clear_status();
+                continue; // Consume the key press
+            }
+
             // Clear pending g for any key that's not part of the gg sequence
             let is_g_sequence = matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G'));
             if !is_g_sequence {
@@ -524,8 +530,13 @@ fn handle_archive(
             // No action on single 'a' in group list
         }
         View::EmailList => {
-            if protect_threads {
-                ui_state.set_status("Archive is only available in thread view".to_string());
+            // Allow if thread has only one email (nothing else to review)
+            let thread_size = app.current_thread_emails().len();
+            if protect_threads && thread_size > 1 {
+                ui_state.set_status(format!(
+                    "{} This thread has {} emails. Press Enter to review the full thread before archiving.",
+                    WARNING_CHAR, thread_size
+                ));
                 return Ok(());
             }
             // Archive single email (only this sender's email)
@@ -549,14 +560,14 @@ fn handle_archive(
 fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
         View::GroupList => {
-            if protect_threads {
-                ui_state.set_status("Archive is only available in thread view".to_string());
-            }
             // No 'A' in group list view to prevent accidental bulk operations
         }
         View::EmailList => {
             if protect_threads {
-                ui_state.set_status("Archive is only available in thread view".to_string());
+                ui_state.set_status(format!(
+                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
+                    WARNING_CHAR
+                ));
                 return;
             }
             if let Some(group) = app.current_group() {
@@ -593,8 +604,13 @@ fn handle_delete(
             // No action on single 'd' in group list
         }
         View::EmailList => {
-            if protect_threads {
-                ui_state.set_status("Delete is only available in thread view".to_string());
+            // Allow if thread has only one email (nothing else to review)
+            let thread_size = app.current_thread_emails().len();
+            if protect_threads && thread_size > 1 {
+                ui_state.set_status(format!(
+                    "{} This thread has {} emails. Press Enter to review the full thread before deleting.",
+                    WARNING_CHAR, thread_size
+                ));
                 return Ok(());
             }
             // Delete single email (only this sender's email)
@@ -618,14 +634,14 @@ fn handle_delete(
 fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
         View::GroupList => {
-            if protect_threads {
-                ui_state.set_status("Delete is only available in thread view".to_string());
-            }
             // No 'D' in group list view to prevent accidental bulk operations
         }
         View::EmailList => {
             if protect_threads {
-                ui_state.set_status("Delete is only available in thread view".to_string());
+                ui_state.set_status(format!(
+                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
+                    WARNING_CHAR
+                ));
                 return;
             }
             if let Some(group) = app.current_group() {
