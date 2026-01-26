@@ -126,7 +126,7 @@ pub fn build_thread_ids(emails: &mut [Email]) {
         return;
     }
 
-    // Map Message-ID to email index
+    // Map Message-ID to email index (for emails in the inbox)
     let mut msg_id_to_idx: HashMap<String, usize> = HashMap::new();
     for (i, email) in emails.iter().enumerate() {
         if let Some(ref msg_id) = email.message_id {
@@ -134,10 +134,29 @@ pub fn build_thread_ids(emails: &mut [Email]) {
         }
     }
 
+    // Track which emails reference each Message-ID (including missing emails)
+    let mut reference_to_emails: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, email) in emails.iter().enumerate() {
+        // Track In-Reply-To references
+        if let Some(ref reply_to) = email.in_reply_to {
+            reference_to_emails
+                .entry(reply_to.clone())
+                .or_default()
+                .push(i);
+        }
+        // Track References
+        for reference in &email.references {
+            reference_to_emails
+                .entry(reference.clone())
+                .or_default()
+                .push(i);
+        }
+    }
+
     // Union-find parent array
     let mut parent: Vec<usize> = (0..emails.len()).collect();
 
-    // Union emails that are connected via In-Reply-To or References
+    // Union emails that are connected via In-Reply-To or References to emails in inbox
     for (i, email) in emails.iter().enumerate() {
         // Check In-Reply-To
         if let Some(ref reply_to) = email.in_reply_to
@@ -146,10 +165,20 @@ pub fn build_thread_ids(emails: &mut [Email]) {
             union(&mut parent, i, j);
         }
 
-        // Check all References - this connects emails even when intermediate messages are missing
+        // Check all References
         for reference in &email.references {
             if let Some(&j) = msg_id_to_idx.get(reference) {
                 union(&mut parent, i, j);
+            }
+        }
+    }
+
+    // Union emails that share a common reference (even to missing emails)
+    for emails_referencing in reference_to_emails.values() {
+        if emails_referencing.len() > 1 {
+            let first = emails_referencing[0];
+            for &other in &emails_referencing[1..] {
+                union(&mut parent, first, other);
             }
         }
     }
@@ -445,6 +474,66 @@ mod tests {
 
         build_thread_ids(&mut emails);
         // Should be in same thread because References contains msg1
+        assert_eq!(emails[0].thread_id, emails[1].thread_id);
+    }
+
+    #[test]
+    fn test_build_thread_ids_shared_in_reply_to_missing_email() {
+        // Two emails that both reply to a common email that's not in the inbox
+        let date = Utc::now();
+        let mut emails = vec![
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Re: Subject")
+                .snippet("Reply 1")
+                .date(date)
+                .message_id("<reply1@example.com>")
+                .in_reply_to("<original@example.com>") // Not in inbox
+                .build(),
+            EmailBuilder::new()
+                .id("2")
+                .from("bob@example.com")
+                .subject("Re: Subject")
+                .snippet("Reply 2")
+                .date(date)
+                .message_id("<reply2@example.com>")
+                .in_reply_to("<original@example.com>") // Not in inbox
+                .build(),
+        ];
+
+        build_thread_ids(&mut emails);
+        // Should be in same thread because they share a common In-Reply-To
+        assert_eq!(emails[0].thread_id, emails[1].thread_id);
+    }
+
+    #[test]
+    fn test_build_thread_ids_shared_reference_to_missing_email() {
+        // Two emails that both reference a common email that's not in the inbox
+        let date = Utc::now();
+        let mut emails = vec![
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Re: Subject")
+                .snippet("Reply 1")
+                .date(date)
+                .message_id("<reply1@example.com>")
+                .references(vec!["<original@example.com>".to_string()])
+                .build(),
+            EmailBuilder::new()
+                .id("2")
+                .from("bob@example.com")
+                .subject("Re: Subject")
+                .snippet("Reply 2")
+                .date(date)
+                .message_id("<reply2@example.com>")
+                .references(vec!["<original@example.com>".to_string()])
+                .build(),
+        ];
+
+        build_thread_ids(&mut emails);
+        // Should be in same thread because they share a common reference
         assert_eq!(emails[0].thread_id, emails[1].thread_id);
     }
 }
