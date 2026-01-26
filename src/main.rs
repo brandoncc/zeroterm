@@ -381,6 +381,11 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     if app.view == View::Thread {
                         // In demo mode, open in browser is simulated
                         ui_state.set_status("Demo mode: would open email in browser".to_string());
+                    } else if app.view == View::EmailList
+                        && !app.current_email_is_multi_message_thread()
+                    {
+                        // Single email - open directly (no thread view needed)
+                        ui_state.set_status("Demo mode: would open email in browser".to_string());
                     } else {
                         app.enter();
                     }
@@ -1209,6 +1214,19 @@ fn run_app(
                     if app.view == View::Thread {
                         // Open email in browser for security (avoids terminal escape attacks)
                         if let Some(email) = app.current_thread_email() {
+                            if let Some(ref message_id) = email.message_id {
+                                if let Err(e) = open_email_in_browser(message_id, &user_email) {
+                                    ui_state.set_status(format!("Failed to open browser: {}", e));
+                                }
+                            } else {
+                                ui_state.set_status("Email has no Message-ID".to_string());
+                            }
+                        }
+                    } else if app.view == View::EmailList
+                        && !app.current_email_is_multi_message_thread()
+                    {
+                        // Single email - open directly in browser (no thread view needed)
+                        if let Some(email) = app.current_email() {
                             if let Some(ref message_id) = email.message_id {
                                 if let Err(e) = open_email_in_browser(message_id, &user_email) {
                                     ui_state.set_status(format!("Failed to open browser: {}", e));

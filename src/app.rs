@@ -571,6 +571,12 @@ impl App {
         self.multi_message_threads.contains(thread_id)
     }
 
+    /// Checks if the currently selected email is part of a multi-message thread
+    pub fn current_email_is_multi_message_thread(&self) -> bool {
+        self.current_email()
+            .is_some_and(|email| self.thread_has_multiple_messages(&email.thread_id))
+    }
+
     /// Checks if any email in a group is part of a multi-message thread
     pub fn group_has_multi_message_threads(&self, group: &EmailGroup) -> bool {
         group
@@ -1107,6 +1113,41 @@ mod tests {
         assert!(app.thread_has_multiple_messages("thread_a"));
         // thread_b has only 1 message
         assert!(!app.thread_has_multiple_messages("thread_b"));
+    }
+
+    #[test]
+    fn test_current_email_is_multi_message_thread_returns_true_for_threads() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+        ]);
+
+        // Enter alice's group
+        app.enter();
+        assert!(app.view == View::EmailList);
+
+        // Email is part of a multi-message thread (thread_a has 2 emails)
+        // This means pressing Enter should show thread view
+        assert!(app.current_email_is_multi_message_thread());
+    }
+
+    #[test]
+    fn test_current_email_is_multi_message_thread_returns_false_for_single_emails() {
+        let mut app = App::new();
+        app.set_emails(vec![create_test_email_with_thread(
+            "1",
+            "thread_a",
+            "alice@example.com",
+        )]);
+
+        // Enter alice's group
+        app.enter();
+        assert!(app.view == View::EmailList);
+
+        // Email is NOT part of a multi-message thread (only 1 email)
+        // This means pressing Enter should open directly in browser
+        assert!(!app.current_email_is_multi_message_thread());
     }
 
     #[test]
