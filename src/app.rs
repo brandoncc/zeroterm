@@ -121,7 +121,9 @@ impl App {
 
         self.groups = group_map
             .into_iter()
-            .map(|(key, emails)| {
+            .map(|(key, mut emails)| {
+                // Sort emails by date descending (newest first)
+                emails.sort_by(|a, b| b.date.cmp(&a.date));
                 let mut group = EmailGroup::new(key);
                 group.emails = emails;
                 group
@@ -304,8 +306,8 @@ impl App {
             .filter(|e| &e.thread_id == thread_id)
             .collect();
 
-        // Sort by date
-        thread_emails.sort_by(|a, b| a.date.cmp(&b.date));
+        // Sort by date descending (newest first)
+        thread_emails.sort_by(|a, b| b.date.cmp(&a.date));
         thread_emails
     }
 

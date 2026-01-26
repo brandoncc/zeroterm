@@ -1,15 +1,31 @@
+use chrono::{DateTime, Datelike, Local, Utc};
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Row, Table, Widget},
 };
 
 use crate::app::{App, GroupMode, ThreadImpact, ThreadWarning, View};
 
 /// Warning indicator character for messages
 const WARNING_CHAR: char = '⚠';
+
+/// Format a date for display in email lists
+/// Shows time for current year, year for older emails
+fn format_date(date: &DateTime<Utc>) -> String {
+    let local: DateTime<Local> = date.with_timezone(&Local);
+    let now = Local::now();
+
+    if local.year() == now.year() {
+        // Current year: "Jan 15 10:30"
+        local.format("%b %d %H:%M").to_string()
+    } else {
+        // Previous years: "Jan 15  2024"
+        local.format("%b %d  %Y").to_string()
+    }
+}
 
 /// State for the confirmation dialog
 #[derive(Debug, Clone, PartialEq)]
@@ -318,29 +334,45 @@ impl Widget for EmailListWidget<'_> {
         block.render(area, buf);
 
         if let Some(group) = self.app.current_group() {
-            for (i, email) in group.emails.iter().enumerate() {
-                if i >= inner.height as usize {
-                    break;
-                }
+            // Emails are already sorted by date descending in the group
+            let rows: Vec<Row> = group
+                .emails
+                .iter()
+                .enumerate()
+                .map(|(i, email)| {
+                    let is_selected = self.app.selected_email == Some(i);
+                    let has_other_senders = self.app.thread_has_multiple_senders(&email.thread_id);
 
-                let is_selected = self.app.selected_email == Some(i);
-                let has_other_senders = self.app.thread_has_multiple_senders(&email.thread_id);
+                    let style = if is_selected {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
 
-                let style = if is_selected {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
+                    let thread_indicator = if has_other_senders { "◈" } else { " " };
+                    let date_str = format_date(&email.date);
 
-                // Show indicator if thread has other senders
-                let thread_indicator = if has_other_senders { "◈ " } else { "  " };
-                let line = format!("{}{}", thread_indicator, email.subject);
-                let span = Span::styled(line, style);
+                    Row::new(vec![
+                        date_str,
+                        thread_indicator.to_string(),
+                        email.subject.clone(),
+                    ])
+                    .style(style)
+                })
+                .collect();
 
-                buf.set_line(inner.x, inner.y + i as u16, &Line::from(span), inner.width);
-            }
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Length(12), // Date column
+                    Constraint::Length(1),  // Thread indicator
+                    Constraint::Min(20),    // Subject
+                ],
+            );
+
+            Widget::render(table, inner, buf);
         }
     }
 }
@@ -369,32 +401,48 @@ impl Widget for ThreadViewWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
+        // Thread emails are already sorted by date descending
         let thread_emails = self.app.current_thread_emails();
         let current_sender = self.app.current_email().map(|e| &e.from_email);
 
-        for (i, email) in thread_emails.iter().enumerate() {
-            if i >= inner.height as usize {
-                break;
-            }
+        let rows: Vec<Row> = thread_emails
+            .iter()
+            .enumerate()
+            .map(|(i, email)| {
+                let is_selected = self.app.selected_thread_email == Some(i);
+                let is_other_sender = current_sender.is_some_and(|s| s != &email.from_email);
 
-            let is_selected = self.app.selected_thread_email == Some(i);
-            let is_other_sender = current_sender.is_some_and(|s| s != &email.from_email);
+                let style = if is_selected {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_other_sender {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                };
 
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else if is_other_sender {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default()
-            };
+                let date_str = format_date(&email.date);
 
-            let line = format!("{}: {}", email.from_email, email.subject);
-            let span = Span::styled(line, style);
+                Row::new(vec![
+                    date_str,
+                    email.from_email.clone(),
+                    email.subject.clone(),
+                ])
+                .style(style)
+            })
+            .collect();
 
-            buf.set_line(inner.x, inner.y + i as u16, &Line::from(span), inner.width);
-        }
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(12), // Date column
+                Constraint::Length(30), // Sender email
+                Constraint::Min(20),    // Subject
+            ],
+        );
+
+        Widget::render(table, inner, buf);
     }
 }
 
