@@ -5,6 +5,7 @@ mod imap_client;
 mod ui;
 
 use std::io;
+use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -395,7 +396,20 @@ fn run_app(
                     app.select_previous();
                 }
                 KeyCode::Enter => {
-                    app.enter();
+                    if app.view == View::Thread {
+                        // Open email in browser for security (avoids terminal escape attacks)
+                        if let Some(email) = app.current_thread_email() {
+                            if let Some(ref message_id) = email.message_id {
+                                if let Err(e) = open_email_in_browser(message_id) {
+                                    ui_state.set_status(format!("Failed to open browser: {}", e));
+                                }
+                            } else {
+                                ui_state.set_status("Email has no Message-ID".to_string());
+                            }
+                        }
+                    } else {
+                        app.enter();
+                    }
                 }
                 KeyCode::Char('g') => {
                     app.toggle_group_mode();
@@ -534,6 +548,39 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState) {
             }
         }
     }
+}
+
+/// Opens an email in the browser using Gmail's Message-ID search
+///
+/// Uses the rfc822msgid: search operator to find the specific email.
+/// This is the safest approach as it avoids rendering potentially
+/// malicious content (unicode exploits, terminal escape sequences) directly in the terminal.
+fn open_email_in_browser(message_id: &str) -> Result<()> {
+    // URL-encode the message ID for safe inclusion in URL
+    // Message-IDs typically look like <unique-id@domain.com>
+    let encoded = urlencoding::encode(message_id);
+    let url = format!(
+        "https://mail.google.com/mail/u/0/#search/rfc822msgid:{}",
+        encoded
+    );
+
+    // Use platform-specific command to open URL in default browser
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(&url).spawn()?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open").arg(&url).spawn()?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd").args(["/C", "start", &url]).spawn()?;
+    }
+
+    Ok(())
 }
 
 /// Handles a confirmed action

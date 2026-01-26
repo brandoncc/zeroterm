@@ -464,7 +464,7 @@ impl Widget for HelpBarWidget<'_> {
                 "j/↓: next | k/↑: prev | Enter: view thread | a: archive | A: archive all | d: delete | D: delete all | g: toggle | q: back"
             }
             View::Thread => {
-                "j/↓: next | k/↑: prev | A: archive entire thread | D: delete entire thread | q: back"
+                "j/↓: next | k/↑: prev | Enter: open in browser | A: archive thread | D: delete thread | q: back"
             }
         };
 

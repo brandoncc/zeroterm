@@ -442,6 +442,13 @@ impl App {
             .map(|e| e.id.clone())
             .collect()
     }
+
+    /// Gets the currently selected email in thread view
+    pub fn current_thread_email(&self) -> Option<&Email> {
+        let thread_emails = self.current_thread_emails();
+        self.selected_thread_email
+            .and_then(|idx| thread_emails.get(idx).copied())
+    }
 }
 
 #[cfg(test)]
@@ -918,5 +925,28 @@ mod tests {
             .unwrap();
         assert_eq!(alice_group.count(), 3); // 3 emails
         assert_eq!(alice_group.thread_count(), 2); // 2 threads
+    }
+
+    #[test]
+    fn test_current_thread_email() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+        ]);
+
+        // Navigate to thread view
+        app.enter(); // Enter email list
+        app.enter(); // Enter thread view
+
+        // Should return the first email in the thread
+        let email_id = app.current_thread_email().map(|e| e.id.clone());
+        assert!(email_id.is_some());
+
+        // Navigate to second email in thread
+        app.select_next();
+        let email2_id = app.current_thread_email().map(|e| e.id.clone());
+        assert!(email2_id.is_some());
+        assert_ne!(email_id, email2_id);
     }
 }
