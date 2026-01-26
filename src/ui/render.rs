@@ -8,6 +8,7 @@ use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
     GroupListWidget, HelpBarWidget, StatusModalWidget, ThreadViewWidget, UiState,
+    UndoHistoryWidget,
 };
 
 /// Renders the entire application UI
@@ -56,6 +57,31 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
             let widget = ThreadViewWidget::new(app);
             let mut table_state = TableState::default().with_selected(app.selected_thread_email);
             frame.render_stateful_widget(widget, chunks[0], &mut table_state);
+        }
+        View::UndoHistory => {
+            // Render the group list as background (dimmed)
+            ui_state.viewport_heights.group_list = inner_height;
+            let widget = GroupListWidget::new(app, ui_state.group_scroll_offset);
+            frame.render_widget(widget, chunks[0]);
+
+            // Calculate modal height for viewport tracking
+            let modal_height = (inner_height as f32 * 0.6) as usize;
+            ui_state.viewport_heights.undo_history = modal_height.saturating_sub(2); // Account for borders
+
+            // Calculate scroll offset to keep selection visible
+            let selected = app.selected_undo;
+            let height = ui_state.viewport_heights.undo_history;
+            let offset = &mut ui_state.undo_scroll_offset;
+
+            if selected < *offset {
+                *offset = selected;
+            } else if selected >= *offset + height && height > 0 {
+                *offset = selected.saturating_sub(height) + 1;
+            }
+
+            // Render undo history modal on top
+            let widget = UndoHistoryWidget::new(app, *offset);
+            frame.render_widget(widget, chunks[0]);
         }
     }
 

@@ -1,6 +1,9 @@
 use crate::email::Email;
 use std::collections::{HashMap, HashSet};
 
+/// Maximum number of undo entries to keep in history
+const MAX_UNDO_HISTORY: usize = 50;
+
 /// The grouping mode for emails
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum GroupMode {
@@ -16,6 +19,34 @@ pub enum View {
     GroupList,
     EmailList,
     Thread,
+    UndoHistory,
+}
+
+/// Type of action that can be undone
+#[derive(Debug, Clone, PartialEq)]
+pub enum UndoActionType {
+    Archive,
+    Delete,
+}
+
+/// Context about what was affected by the action
+#[derive(Debug, Clone, PartialEq)]
+pub enum UndoContext {
+    SingleEmail { subject: String },
+    Group { sender: String },
+    Thread { subject: String },
+}
+
+/// An entry in the undo history
+#[derive(Debug, Clone)]
+pub struct UndoEntry {
+    pub action_type: UndoActionType,
+    pub context: UndoContext,
+    /// Email Message-IDs with their original folders: (message_id, original_folder)
+    /// We use Message-ID instead of UID because UIDs change when emails move folders
+    pub emails: Vec<(String, String)>,
+    /// Where the emails are now: "[Gmail]/All Mail" or "[Gmail]/Trash"
+    pub current_folder: String,
 }
 
 /// Represents a group of emails from the same sender
@@ -69,6 +100,12 @@ pub struct App {
     user_email: Option<String>,
     /// When true, only show emails that are part of multi-message threads
     pub filter_to_threads: bool,
+    /// History of undoable actions (newest first)
+    pub undo_history: Vec<UndoEntry>,
+    /// Selected index in undo history view
+    pub selected_undo: usize,
+    /// View to return to after closing undo history
+    previous_view: Option<View>,
 }
 
 impl Default for App {
@@ -90,6 +127,9 @@ impl App {
             multi_message_threads: HashSet::new(),
             user_email: None,
             filter_to_threads: false,
+            undo_history: Vec::new(),
+            selected_undo: 0,
+            previous_view: None,
         }
     }
 
@@ -180,6 +220,7 @@ impl App {
             View::GroupList => self.select_next_group(),
             View::EmailList => self.select_next_email(),
             View::Thread => self.select_next_thread_email(),
+            View::UndoHistory => self.select_next_undo(),
         }
     }
 
@@ -189,6 +230,7 @@ impl App {
             View::GroupList => self.select_previous_group(),
             View::EmailList => self.select_previous_email(),
             View::Thread => self.select_previous_thread_email(),
+            View::UndoHistory => self.select_previous_undo(),
         }
     }
 
@@ -230,6 +272,11 @@ impl App {
                     self.selected_thread_email = Some(0);
                 }
             }
+            View::UndoHistory => {
+                if !self.undo_history.is_empty() {
+                    self.selected_undo = 0;
+                }
+            }
         }
     }
 
@@ -256,6 +303,11 @@ impl App {
                 let thread_emails = self.current_thread_emails();
                 if !thread_emails.is_empty() {
                     self.selected_thread_email = Some(thread_emails.len() - 1);
+                }
+            }
+            View::UndoHistory => {
+                if !self.undo_history.is_empty() {
+                    self.selected_undo = self.undo_history.len() - 1;
                 }
             }
         }
@@ -339,12 +391,76 @@ impl App {
         };
     }
 
+    /// Selects the next item in undo history
+    fn select_next_undo(&mut self) {
+        if !self.undo_history.is_empty() && self.selected_undo < self.undo_history.len() - 1 {
+            self.selected_undo += 1;
+        }
+    }
+
+    /// Selects the previous item in undo history
+    fn select_previous_undo(&mut self) {
+        if self.selected_undo > 0 {
+            self.selected_undo -= 1;
+        }
+    }
+
+    /// Enters the undo history view
+    pub fn enter_undo_history(&mut self) {
+        self.previous_view = Some(self.view);
+        self.view = View::UndoHistory;
+        self.selected_undo = 0;
+    }
+
+    /// Exits the undo history view and returns to the previous view
+    pub fn exit_undo_history(&mut self) {
+        if let Some(prev) = self.previous_view.take() {
+            self.view = prev;
+        } else {
+            self.view = View::GroupList;
+        }
+    }
+
+    /// Adds an entry to the undo history (at the front, newest first)
+    pub fn push_undo(&mut self, entry: UndoEntry) {
+        self.undo_history.insert(0, entry);
+        // Trim to max size
+        if self.undo_history.len() > MAX_UNDO_HISTORY {
+            self.undo_history.truncate(MAX_UNDO_HISTORY);
+        }
+    }
+
+    /// Removes and returns the undo entry at the given index
+    pub fn pop_undo(&mut self, index: usize) -> Option<UndoEntry> {
+        if index < self.undo_history.len() {
+            let entry = self.undo_history.remove(index);
+            // Adjust selected_undo if needed
+            if self.selected_undo >= self.undo_history.len() && !self.undo_history.is_empty() {
+                self.selected_undo = self.undo_history.len() - 1;
+            }
+            Some(entry)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the number of entries in undo history
+    pub fn undo_history_len(&self) -> usize {
+        self.undo_history.len()
+    }
+
+    /// Returns the currently selected undo entry, if any
+    pub fn current_undo_entry(&self) -> Option<&UndoEntry> {
+        self.undo_history.get(self.selected_undo)
+    }
+
     /// Enters the next view level (group -> emails -> thread)
     pub fn enter(&mut self) {
         match self.view {
             View::GroupList => self.enter_group(),
             View::EmailList => self.enter_thread(),
-            View::Thread => {} // Already at deepest level
+            View::Thread => {}      // Already at deepest level
+            View::UndoHistory => {} // Enter handled separately in main.rs
         }
     }
 
@@ -354,6 +470,7 @@ impl App {
             View::GroupList => {} // Can't go back, handled by main.rs for quit
             View::EmailList => self.exit_to_groups(),
             View::Thread => self.exit_to_emails(),
+            View::UndoHistory => self.exit_undo_history(),
         }
     }
 
@@ -580,6 +697,36 @@ impl App {
         self.current_thread_emails()
             .iter()
             .map(|e| (e.id.clone(), e.source_folder.clone()))
+            .collect()
+    }
+
+    /// Gets all email Message-IDs and source folders in the current group
+    /// Only returns emails that have a Message-ID
+    pub fn current_group_message_ids(&self) -> Vec<(String, String)> {
+        self.current_group()
+            .map(|g| {
+                g.emails
+                    .iter()
+                    .filter_map(|e| {
+                        e.message_id
+                            .as_ref()
+                            .map(|mid| (mid.clone(), e.source_folder.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Gets all email Message-IDs and source folders in the current thread
+    /// Only returns emails that have a Message-ID
+    pub fn current_thread_message_ids(&self) -> Vec<(String, String)> {
+        self.current_thread_emails()
+            .iter()
+            .filter_map(|e| {
+                e.message_id
+                    .as_ref()
+                    .map(|mid| (mid.clone(), e.source_folder.clone()))
+            })
             .collect()
     }
 
@@ -1134,5 +1281,157 @@ mod tests {
         let filtered = app.filtered_groups();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].key, "alice@example.com");
+    }
+
+    #[test]
+    fn test_undo_history_push_and_pop() {
+        let mut app = App::new();
+        assert_eq!(app.undo_history_len(), 0);
+
+        // Push an entry
+        let entry1 = UndoEntry {
+            action_type: UndoActionType::Archive,
+            context: UndoContext::SingleEmail {
+                subject: "Test Email".to_string(),
+            },
+            emails: vec![("1".to_string(), "INBOX".to_string())],
+            current_folder: "[Gmail]/All Mail".to_string(),
+        };
+        app.push_undo(entry1);
+        assert_eq!(app.undo_history_len(), 1);
+
+        // Push another entry
+        let entry2 = UndoEntry {
+            action_type: UndoActionType::Delete,
+            context: UndoContext::Group {
+                sender: "test@example.com".to_string(),
+            },
+            emails: vec![
+                ("2".to_string(), "INBOX".to_string()),
+                ("3".to_string(), "INBOX".to_string()),
+            ],
+            current_folder: "[Gmail]/Trash".to_string(),
+        };
+        app.push_undo(entry2);
+        assert_eq!(app.undo_history_len(), 2);
+
+        // Newest entry should be at index 0
+        let current = app.current_undo_entry().unwrap();
+        assert_eq!(current.action_type, UndoActionType::Delete);
+
+        // Pop the first entry
+        let popped = app.pop_undo(0).unwrap();
+        assert_eq!(popped.action_type, UndoActionType::Delete);
+        assert_eq!(app.undo_history_len(), 1);
+
+        // Now the archive entry should be at index 0
+        let current = app.current_undo_entry().unwrap();
+        assert_eq!(current.action_type, UndoActionType::Archive);
+    }
+
+    #[test]
+    fn test_undo_history_max_size() {
+        let mut app = App::new();
+
+        // Push more than MAX_UNDO_HISTORY entries
+        for i in 0..60 {
+            let entry = UndoEntry {
+                action_type: UndoActionType::Archive,
+                context: UndoContext::SingleEmail {
+                    subject: format!("Email {}", i),
+                },
+                emails: vec![(i.to_string(), "INBOX".to_string())],
+                current_folder: "[Gmail]/All Mail".to_string(),
+            };
+            app.push_undo(entry);
+        }
+
+        // Should be capped at MAX_UNDO_HISTORY (50)
+        assert_eq!(app.undo_history_len(), 50);
+
+        // The newest entry (59) should be at index 0
+        let current = app.current_undo_entry().unwrap();
+        if let UndoContext::SingleEmail { subject } = &current.context {
+            assert_eq!(subject, "Email 59");
+        } else {
+            panic!("Expected SingleEmail context");
+        }
+    }
+
+    #[test]
+    fn test_undo_history_navigation() {
+        let mut app = App::new();
+
+        // Push some entries
+        for i in 0..5 {
+            let entry = UndoEntry {
+                action_type: UndoActionType::Archive,
+                context: UndoContext::SingleEmail {
+                    subject: format!("Email {}", i),
+                },
+                emails: vec![(i.to_string(), "INBOX".to_string())],
+                current_folder: "[Gmail]/All Mail".to_string(),
+            };
+            app.push_undo(entry);
+        }
+
+        app.enter_undo_history();
+        assert_eq!(app.view, View::UndoHistory);
+        assert_eq!(app.selected_undo, 0);
+
+        // Navigate down
+        app.select_next();
+        assert_eq!(app.selected_undo, 1);
+
+        app.select_next();
+        assert_eq!(app.selected_undo, 2);
+
+        // Navigate up
+        app.select_previous();
+        assert_eq!(app.selected_undo, 1);
+
+        // Jump to first
+        app.select_first();
+        assert_eq!(app.selected_undo, 0);
+
+        // Jump to last
+        app.select_last();
+        assert_eq!(app.selected_undo, 4);
+
+        // Exit undo history
+        app.exit_undo_history();
+        assert_eq!(app.view, View::GroupList);
+    }
+
+    #[test]
+    fn test_enter_undo_history_empty() {
+        let mut app = App::new();
+
+        // Should enter undo history view even when empty
+        app.enter_undo_history();
+        assert_eq!(app.view, View::UndoHistory);
+
+        // Can exit back to previous view
+        app.exit_undo_history();
+        assert_eq!(app.view, View::GroupList);
+    }
+
+    #[test]
+    fn test_undo_context_variants() {
+        // Test all context variants
+        let single = UndoContext::SingleEmail {
+            subject: "Test".to_string(),
+        };
+        assert!(matches!(single, UndoContext::SingleEmail { .. }));
+
+        let group = UndoContext::Group {
+            sender: "test@example.com".to_string(),
+        };
+        assert!(matches!(group, UndoContext::Group { .. }));
+
+        let thread = UndoContext::Thread {
+            subject: "Thread Subject".to_string(),
+        };
+        assert!(matches!(thread, UndoContext::Thread { .. }));
     }
 }
