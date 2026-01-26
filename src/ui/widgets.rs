@@ -27,28 +27,33 @@ pub enum ConfirmAction {
         impact: ThreadImpact,
     },
     /// Archive entire thread (all emails including other senders)
-    ArchiveThread {
-        thread_email_count: usize,
-    },
+    ArchiveThread { thread_email_count: usize },
     /// Delete entire thread (all emails including other senders)
-    DeleteThread {
-        thread_email_count: usize,
-    },
+    DeleteThread { thread_email_count: usize },
 }
 
 impl ConfirmAction {
     pub fn message(&self) -> Vec<String> {
         match self {
-            ConfirmAction::ArchiveEmails { sender, count, impact } => {
+            ConfirmAction::ArchiveEmails {
+                sender,
+                count,
+                impact,
+            } => {
                 let mut lines = vec![format!("Archive {} email(s) from {}?", count, sender)];
                 if let Some(warning) = &impact.warning {
                     match warning {
-                        ThreadWarning::SenderEmailMode { thread_count, email_count } => {
+                        ThreadWarning::SenderEmailMode {
+                            thread_count,
+                            email_count,
+                        } => {
                             lines.push(format!(
                                 "{} {} thread(s) also contain {} email(s) from other senders",
                                 WARNING_CHAR, thread_count, email_count
                             ));
-                            lines.push("(only emails from this sender will be archived)".to_string());
+                            lines.push(
+                                "(only emails from this sender will be archived)".to_string(),
+                            );
                         }
                         ThreadWarning::DomainMode { thread_count } => {
                             lines.push(format!(
@@ -61,16 +66,24 @@ impl ConfirmAction {
                 lines.push("(y/n)".to_string());
                 lines
             }
-            ConfirmAction::DeleteEmails { sender, count, impact } => {
+            ConfirmAction::DeleteEmails {
+                sender,
+                count,
+                impact,
+            } => {
                 let mut lines = vec![format!("Delete {} email(s) from {}?", count, sender)];
                 if let Some(warning) = &impact.warning {
                     match warning {
-                        ThreadWarning::SenderEmailMode { thread_count, email_count } => {
+                        ThreadWarning::SenderEmailMode {
+                            thread_count,
+                            email_count,
+                        } => {
                             lines.push(format!(
                                 "{} {} thread(s) also contain {} email(s) from other senders",
                                 WARNING_CHAR, thread_count, email_count
                             ));
-                            lines.push("(only emails from this sender will be deleted)".to_string());
+                            lines
+                                .push("(only emails from this sender will be deleted)".to_string());
                         }
                         ThreadWarning::DomainMode { thread_count } => {
                             lines.push(format!(
@@ -217,7 +230,9 @@ impl Widget for BusyModalWidget<'_> {
             inner.y,
             &Line::from(Span::styled(
                 display_msg,
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             )),
             inner.width,
         );
@@ -242,9 +257,7 @@ impl Widget for GroupListWidget<'_> {
             GroupMode::ByDomain => "domain",
         };
         let title = format!(" Senders (by {}) ", mode_str);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(title);
+        let block = Block::default().borders(Borders::ALL).title(title);
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -268,16 +281,14 @@ impl Widget for GroupListWidget<'_> {
                 // Each email is its own thread
                 format!("{} ({} emails)", group.key, email_count)
             } else {
-                format!("{} ({} emails in {} threads)", group.key, email_count, thread_count)
+                format!(
+                    "{} ({} emails in {} threads)",
+                    group.key, email_count, thread_count
+                )
             };
             let span = Span::styled(line, style);
 
-            buf.set_line(
-                inner.x,
-                inner.y + i as u16,
-                &Line::from(span),
-                inner.width,
-            );
+            buf.set_line(inner.x, inner.y + i as u16, &Line::from(span), inner.width);
         }
     }
 }
@@ -328,12 +339,7 @@ impl Widget for EmailListWidget<'_> {
                 let line = format!("{}{}", thread_indicator, email.subject);
                 let span = Span::styled(line, style);
 
-                buf.set_line(
-                    inner.x,
-                    inner.y + i as u16,
-                    &Line::from(span),
-                    inner.width,
-                );
+                buf.set_line(inner.x, inner.y + i as u16, &Line::from(span), inner.width);
             }
         }
     }
@@ -387,12 +393,7 @@ impl Widget for ThreadViewWidget<'_> {
             let line = format!("{}: {}", email.from_email, email.subject);
             let span = Span::styled(line, style);
 
-            buf.set_line(
-                inner.x,
-                inner.y + i as u16,
-                &Line::from(span),
-                inner.width,
-            );
+            buf.set_line(inner.x, inner.y + i as u16, &Line::from(span), inner.width);
         }
     }
 }
@@ -422,8 +423,7 @@ impl Widget for HelpBarWidget<'_> {
             }
         };
 
-        let paragraph = Paragraph::new(help_text)
-            .style(Style::default().fg(Color::DarkGray));
+        let paragraph = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
 
         paragraph.render(area, buf);
     }

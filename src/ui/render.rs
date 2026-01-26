@@ -1,6 +1,6 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
     Frame,
+    layout::{Constraint, Direction, Layout, Rect},
 };
 
 use crate::app::{App, View};

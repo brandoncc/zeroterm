@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use imap::{ImapConnection, Session};
 
-use crate::email::{build_thread_ids, Email};
+use crate::email::{Email, build_thread_ids};
 
 /// Trait for email operations - allows mocking in tests
 #[cfg_attr(test, mockall::automock)]
@@ -44,15 +44,18 @@ impl ImapClient {
         // Extract From
         let from = envelope.from.as_ref().and_then(|addrs| {
             addrs.first().map(|addr| {
-                let name = addr.name.as_ref().map(|n| {
-                    String::from_utf8_lossy(n).to_string()
-                });
-                let mailbox = addr.mailbox.as_ref().map(|m| {
-                    String::from_utf8_lossy(m).to_string()
-                });
-                let host = addr.host.as_ref().map(|h| {
-                    String::from_utf8_lossy(h).to_string()
-                });
+                let name = addr
+                    .name
+                    .as_ref()
+                    .map(|n| String::from_utf8_lossy(n).to_string());
+                let mailbox = addr
+                    .mailbox
+                    .as_ref()
+                    .map(|m| String::from_utf8_lossy(m).to_string());
+                let host = addr
+                    .host
+                    .as_ref()
+                    .map(|h| String::from_utf8_lossy(h).to_string());
 
                 match (name, mailbox, host) {
                     (Some(n), Some(m), Some(h)) => format!("{} <{}@{}>", n, m, h),
@@ -331,7 +334,14 @@ mod tests {
     fn test_parse_message_id_list() {
         let list = "<msg1@example.com> <msg2@example.com> <msg3@example.com>";
         let ids = parse_message_id_list(list);
-        assert_eq!(ids, vec!["<msg1@example.com>", "<msg2@example.com>", "<msg3@example.com>"]);
+        assert_eq!(
+            ids,
+            vec![
+                "<msg1@example.com>",
+                "<msg2@example.com>",
+                "<msg3@example.com>"
+            ]
+        );
     }
 
     #[test]

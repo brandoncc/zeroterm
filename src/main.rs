@@ -13,9 +13,9 @@ use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::{App, View};
 use email::Email;
@@ -90,16 +90,16 @@ fn main() -> Result<()> {
 }
 
 /// Spawns the IMAP worker thread
-fn spawn_imap_worker(
-    cmd_rx: mpsc::Receiver<ImapCommand>,
-    resp_tx: mpsc::Sender<ImapResponse>,
-) {
+fn spawn_imap_worker(cmd_rx: mpsc::Receiver<ImapCommand>, resp_tx: mpsc::Sender<ImapResponse>) {
     thread::spawn(move || {
         // Connect to IMAP
         let credentials = match config::load_credentials() {
             Ok(c) => c,
             Err(e) => {
-                let _ = resp_tx.send(ImapResponse::Error(format!("Failed to load credentials: {}", e)));
+                let _ = resp_tx.send(ImapResponse::Error(format!(
+                    "Failed to load credentials: {}",
+                    e
+                )));
                 return;
             }
         };
@@ -215,18 +215,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
         // Check for IMAP responses (non-blocking)
         while let Ok(response) = resp_rx.try_recv() {
             match response {
-                ImapResponse::Emails(result) => {
-                    match result {
-                        Ok(emails) => {
-                            app.set_emails(emails);
-                            ui_state.clear_busy();
-                        }
-                        Err(e) => {
-                            ui_state.clear_busy();
-                            ui_state.set_status(&format!("Error: {}", e));
-                        }
+                ImapResponse::Emails(result) => match result {
+                    Ok(emails) => {
+                        app.set_emails(emails);
+                        ui_state.clear_busy();
                     }
-                }
+                    Err(e) => {
+                        ui_state.clear_busy();
+                        ui_state.set_status(&format!("Error: {}", e));
+                    }
+                },
                 ImapResponse::ArchiveResult(result) => {
                     if let Some(PendingOp::ArchiveSingle(id)) = pending_operation.take() {
                         if result.is_ok() {

@@ -18,9 +18,9 @@ pub struct Credentials {
 
 /// Returns the configuration directory path
 pub fn config_dir() -> Result<PathBuf> {
-    dirs::config_dir()
-        .map(|p| p.join(APP_NAME))
-        .context("Failed to determine config directory")
+    let xdg_dirs = xdg::BaseDirectories::with_prefix(APP_NAME)
+        .context("Failed to determine config directory")?;
+    Ok(xdg_dirs.get_config_home())
 }
 
 /// Returns the path to the credentials file
@@ -39,9 +39,7 @@ pub fn ensure_config_dir() -> Result<PathBuf> {
 
 /// Checks if credentials file exists
 pub fn has_credentials() -> bool {
-    credentials_path()
-        .map(|p| p.exists())
-        .unwrap_or(false)
+    credentials_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 /// Trait for resolving secrets, allowing for mocking in tests
@@ -83,11 +81,12 @@ pub fn load_credentials_with_resolver(resolver: &impl SecretResolver) -> Result<
     let path = credentials_path()?;
     let content = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read credentials from {:?}", path))?;
-    let credentials: Credentials = toml::from_str(&content)
-        .context("Failed to parse credentials.toml")?;
+    let credentials: Credentials =
+        toml::from_str(&content).context("Failed to parse credentials.toml")?;
 
     // Resolve app_password if it's a secret reference (e.g., op://vault/item/field)
-    let resolved_password = resolver.resolve(&credentials.app_password)
+    let resolved_password = resolver
+        .resolve(&credentials.app_password)
         .context("Failed to resolve app_password")?;
 
     Ok(Credentials {
@@ -138,9 +137,15 @@ app_password = "xxxx xxxx xxxx xxxx"
     fn test_op_resolver_returns_value_unchanged_when_not_op_reference() {
         let resolver = OpSecretResolver;
         assert_eq!(resolver.resolve("my-secret").unwrap(), "my-secret");
-        assert_eq!(resolver.resolve("xxxx xxxx xxxx xxxx").unwrap(), "xxxx xxxx xxxx xxxx");
+        assert_eq!(
+            resolver.resolve("xxxx xxxx xxxx xxxx").unwrap(),
+            "xxxx xxxx xxxx xxxx"
+        );
         assert_eq!(resolver.resolve("").unwrap(), "");
-        assert_eq!(resolver.resolve("op-but-not-reference").unwrap(), "op-but-not-reference");
+        assert_eq!(
+            resolver.resolve("op-but-not-reference").unwrap(),
+            "op-but-not-reference"
+        );
     }
 
     #[test]

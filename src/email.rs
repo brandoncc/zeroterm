@@ -84,7 +84,10 @@ impl Email {
 pub fn extract_email(from: &str) -> String {
     let re = Regex::new(r"<([^>]+)>").unwrap();
     if let Some(captures) = re.captures(from) {
-        captures.get(1).map(|m| m.as_str().to_string()).unwrap_or_default()
+        captures
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default()
     } else {
         from.trim().to_string()
     }
@@ -94,11 +97,7 @@ pub fn extract_email(from: &str) -> String {
 /// If no `@` is present, returns the full email to avoid grouping unrelated
 /// malformed addresses together.
 pub fn extract_domain(email: &str) -> String {
-    email
-        .split('@')
-        .nth(1)
-        .unwrap_or(email)
-        .to_string()
+    email.split('@').nth(1).unwrap_or(email).to_string()
 }
 
 /// Builds thread IDs for a collection of emails using Message-ID, In-Reply-To, and References headers.
@@ -256,18 +255,16 @@ mod tests {
     #[test]
     fn test_build_thread_ids_single_email() {
         let date = Utc::now();
-        let mut emails = vec![
-            Email::with_headers(
-                "1".to_string(),
-                "alice@example.com".to_string(),
-                "Subject".to_string(),
-                "Snippet".to_string(),
-                date,
-                Some("<msg1@example.com>".to_string()),
-                None,
-                Vec::new(),
-            ),
-        ];
+        let mut emails = vec![Email::with_headers(
+            "1".to_string(),
+            "alice@example.com".to_string(),
+            "Subject".to_string(),
+            "Snippet".to_string(),
+            date,
+            Some("<msg1@example.com>".to_string()),
+            None,
+            Vec::new(),
+        )];
 
         build_thread_ids(&mut emails);
         assert_eq!(emails[0].thread_id, "thread_0");
@@ -403,7 +400,10 @@ mod tests {
                 date,
                 Some("<msg3@example.com>".to_string()),
                 Some("<msg2@example.com>".to_string()), // This won't match (msg2 not in inbox)
-                vec!["<msg1@example.com>".to_string(), "<msg2@example.com>".to_string()],
+                vec![
+                    "<msg1@example.com>".to_string(),
+                    "<msg2@example.com>".to_string(),
+                ],
             ),
         ];
 
