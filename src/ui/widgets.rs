@@ -978,7 +978,6 @@ impl HelpMenuWidget {
                         ("A", "Archive all in group"),
                         ("d", "Delete email"),
                         ("D", "Delete all in group"),
-                        ("m", "Toggle email/domain mode"),
                         ("t", "Toggle threads only"),
                         ("u", "Undo history"),
                     ],
