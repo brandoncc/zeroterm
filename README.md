@@ -128,6 +128,16 @@ app_password = "xxxx xxxx xxxx xxxx"
 zeroterm
 ```
 
+### Demo Mode
+
+To try Zeroterm without connecting to an email account, run:
+
+```sh
+zeroterm --demo
+```
+
+Demo mode loads sample emails and simulates all operations locally. It behaves exactly like the real program, including thread protection warnings and operation feedback, but no actual emails are affected.
+
 ## Development
 
 This project uses [devenv](https://devenv.sh/) for development environment management.

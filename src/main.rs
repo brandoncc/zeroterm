@@ -9,7 +9,7 @@ use std::io;
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
@@ -158,6 +158,56 @@ struct DemoUndoStorage {
     emails: Vec<Vec<Email>>,
 }
 
+/// Simulated latency for demo mode operations (milliseconds)
+const DEMO_LATENCY_MS: u64 = 300;
+
+/// Pending operations in demo mode (mirrors PendingOp for real mode)
+enum DemoPendingOp {
+    ArchiveSingle {
+        email: Email,
+    },
+    DeleteSingle {
+        email: Email,
+    },
+    ArchiveGroup {
+        emails: Vec<Email>,
+        sender: String,
+    },
+    DeleteGroup {
+        emails: Vec<Email>,
+        sender: String,
+    },
+    ArchiveThread {
+        thread_id: String,
+        thread_emails: Vec<Email>,
+        subject: String,
+    },
+    DeleteThread {
+        thread_id: String,
+        thread_emails: Vec<Email>,
+        subject: String,
+    },
+    Undo {
+        index: usize,
+        emails: Vec<Email>,
+    },
+}
+
+impl DemoPendingOp {
+    /// Returns the busy message to display while this operation is pending
+    fn busy_message(&self) -> &'static str {
+        match self {
+            DemoPendingOp::ArchiveSingle { .. }
+            | DemoPendingOp::ArchiveGroup { .. }
+            | DemoPendingOp::ArchiveThread { .. } => "Archiving...",
+            DemoPendingOp::DeleteSingle { .. }
+            | DemoPendingOp::DeleteGroup { .. }
+            | DemoPendingOp::DeleteThread { .. } => "Deleting...",
+            DemoPendingOp::Undo { .. } => "Restoring...",
+        }
+    }
+}
+
 impl DemoUndoStorage {
     fn new() -> Self {
         Self { emails: Vec::new() }
@@ -193,8 +243,27 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
     // Track pending 'g' for gg sequence
     let mut pending_g = false;
 
+    // Pending operation for simulated network latency
+    let mut pending_op: Option<DemoPendingOp> = None;
+    let mut op_start_time: Option<Instant> = None;
+
+    // Demo mode uses the default protect_threads setting (true)
+    let protect_threads = true;
+
     // Main event loop
     loop {
+        // Check if pending operation should complete
+        if let (Some(op), Some(start)) = (pending_op.take(), op_start_time.take()) {
+            if start.elapsed() >= Duration::from_millis(DEMO_LATENCY_MS) {
+                // Execute the operation
+                execute_demo_op(&mut app, &mut ui_state, &mut undo_storage, op);
+            } else {
+                // Not ready yet, put it back
+                pending_op = Some(op);
+                op_start_time = Some(start);
+            }
+        }
+
         terminal.draw(|f| render(f, &app, &mut ui_state))?;
 
         // Poll for keyboard events with timeout
@@ -213,12 +282,11 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                             if matches!(action, ConfirmAction::Quit) {
                                 break;
                             }
-                            handle_demo_confirmed_action(
-                                &mut app,
-                                &mut ui_state,
-                                &mut undo_storage,
-                                action,
-                            );
+                            if let Some(op) = handle_demo_confirmed_action(&app, action) {
+                                ui_state.set_busy(op.busy_message());
+                                pending_op = Some(op);
+                                op_start_time = Some(Instant::now());
+                            }
                         }
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -275,7 +343,11 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     }
                     KeyCode::Enter => {
                         // Execute undo in demo mode
-                        handle_demo_undo(&mut app, &mut ui_state, &mut undo_storage);
+                        if let Some(op) = handle_demo_undo(&app, &mut undo_storage) {
+                            ui_state.set_busy(op.busy_message());
+                            pending_op = Some(op);
+                            op_start_time = Some(Instant::now());
+                        }
                     }
                     _ => {}
                 }
@@ -340,16 +412,24 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     app.enter_undo_history();
                 }
                 KeyCode::Char('a') => {
-                    handle_demo_archive(&mut app, &mut ui_state, &mut undo_storage);
+                    if let Some(op) = handle_demo_archive(&app, &mut ui_state, protect_threads) {
+                        ui_state.set_busy(op.busy_message());
+                        pending_op = Some(op);
+                        op_start_time = Some(Instant::now());
+                    }
                 }
                 KeyCode::Char('A') => {
-                    handle_demo_archive_all(&app, &mut ui_state);
+                    handle_demo_archive_all(&app, &mut ui_state, protect_threads);
                 }
                 KeyCode::Char('d') => {
-                    handle_demo_delete(&mut app, &mut ui_state, &mut undo_storage);
+                    if let Some(op) = handle_demo_delete(&app, &mut ui_state, protect_threads) {
+                        ui_state.set_busy(op.busy_message());
+                        pending_op = Some(op);
+                        op_start_time = Some(Instant::now());
+                    }
                 }
                 KeyCode::Char('D') => {
-                    handle_demo_delete_all(&app, &mut ui_state);
+                    handle_demo_delete_all(&app, &mut ui_state, protect_threads);
                 }
                 _ => {}
             }
@@ -359,39 +439,190 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
     Ok(())
 }
 
-/// Handles 'a' key in demo mode
-fn handle_demo_archive(app: &mut App, ui_state: &mut UiState, undo_storage: &mut DemoUndoStorage) {
-    match app.view {
-        View::GroupList | View::UndoHistory => {}
-        View::EmailList => {
-            if let Some(email) = app.current_email().cloned() {
-                // Store email for undo and create undo entry
-                if let Some(ref message_id) = email.message_id {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Archive,
-                        context: UndoContext::SingleEmail {
-                            subject: email.subject.clone(),
-                        },
-                        emails: vec![(message_id.clone(), email.source_folder.clone())],
-                        current_folder: "[Gmail]/All Mail".to_string(),
-                    };
-                    undo_storage.push(vec![email.clone()]);
-                    app.push_undo(undo_entry);
-                }
-                app.remove_email(&email.id);
-                ui_state.set_status("Archived 1 email".to_string());
+/// Executes a pending demo operation after simulated latency
+fn execute_demo_op(
+    app: &mut App,
+    ui_state: &mut UiState,
+    undo_storage: &mut DemoUndoStorage,
+    op: DemoPendingOp,
+) {
+    ui_state.clear_busy();
+    match op {
+        DemoPendingOp::ArchiveSingle { email } => {
+            if let Some(ref message_id) = email.message_id {
+                let undo_entry = UndoEntry {
+                    action_type: UndoActionType::Archive,
+                    context: UndoContext::SingleEmail {
+                        subject: email.subject.clone(),
+                    },
+                    emails: vec![(message_id.clone(), email.source_folder.clone())],
+                    current_folder: "[Gmail]/All Mail".to_string(),
+                };
+                undo_storage.push(vec![email.clone()]);
+                app.push_undo(undo_entry);
+            }
+            app.remove_email(&email.id);
+        }
+        DemoPendingOp::DeleteSingle { email } => {
+            if let Some(ref message_id) = email.message_id {
+                let undo_entry = UndoEntry {
+                    action_type: UndoActionType::Delete,
+                    context: UndoContext::SingleEmail {
+                        subject: email.subject.clone(),
+                    },
+                    emails: vec![(message_id.clone(), email.source_folder.clone())],
+                    current_folder: "[Gmail]/Trash".to_string(),
+                };
+                undo_storage.push(vec![email.clone()]);
+                app.push_undo(undo_entry);
+            }
+            app.remove_email(&email.id);
+        }
+        DemoPendingOp::ArchiveGroup { emails, sender } => {
+            let message_ids: Vec<(String, String)> = emails
+                .iter()
+                .filter_map(|e| {
+                    e.message_id
+                        .as_ref()
+                        .map(|mid| (mid.clone(), e.source_folder.clone()))
+                })
+                .collect();
+            if !message_ids.is_empty() {
+                let undo_entry = UndoEntry {
+                    action_type: UndoActionType::Archive,
+                    context: UndoContext::Group { sender },
+                    emails: message_ids,
+                    current_folder: "[Gmail]/All Mail".to_string(),
+                };
+                undo_storage.push(emails);
+                app.push_undo(undo_entry);
+            }
+            app.remove_current_group_emails();
+        }
+        DemoPendingOp::DeleteGroup { emails, sender } => {
+            let message_ids: Vec<(String, String)> = emails
+                .iter()
+                .filter_map(|e| {
+                    e.message_id
+                        .as_ref()
+                        .map(|mid| (mid.clone(), e.source_folder.clone()))
+                })
+                .collect();
+            if !message_ids.is_empty() {
+                let undo_entry = UndoEntry {
+                    action_type: UndoActionType::Delete,
+                    context: UndoContext::Group { sender },
+                    emails: message_ids,
+                    current_folder: "[Gmail]/Trash".to_string(),
+                };
+                undo_storage.push(emails);
+                app.push_undo(undo_entry);
+            }
+            app.remove_current_group_emails();
+        }
+        DemoPendingOp::ArchiveThread {
+            thread_id,
+            thread_emails,
+            subject,
+        } => {
+            let message_ids: Vec<(String, String)> = thread_emails
+                .iter()
+                .filter_map(|e| {
+                    e.message_id
+                        .as_ref()
+                        .map(|mid| (mid.clone(), e.source_folder.clone()))
+                })
+                .collect();
+            if !message_ids.is_empty() {
+                let undo_entry = UndoEntry {
+                    action_type: UndoActionType::Archive,
+                    context: UndoContext::Thread { subject },
+                    emails: message_ids,
+                    current_folder: "[Gmail]/All Mail".to_string(),
+                };
+                undo_storage.push(thread_emails);
+                app.push_undo(undo_entry);
+            }
+            app.remove_thread(&thread_id);
+            if app.view == View::Thread {
+                app.exit();
             }
         }
-        View::Thread => {}
+        DemoPendingOp::DeleteThread {
+            thread_id,
+            thread_emails,
+            subject,
+        } => {
+            let message_ids: Vec<(String, String)> = thread_emails
+                .iter()
+                .filter_map(|e| {
+                    e.message_id
+                        .as_ref()
+                        .map(|mid| (mid.clone(), e.source_folder.clone()))
+                })
+                .collect();
+            if !message_ids.is_empty() {
+                let undo_entry = UndoEntry {
+                    action_type: UndoActionType::Delete,
+                    context: UndoContext::Thread { subject },
+                    emails: message_ids,
+                    current_folder: "[Gmail]/Trash".to_string(),
+                };
+                undo_storage.push(thread_emails);
+                app.push_undo(undo_entry);
+            }
+            app.remove_thread(&thread_id);
+            if app.view == View::Thread {
+                app.exit();
+            }
+        }
+        DemoPendingOp::Undo { index, emails } => {
+            app.restore_emails(emails);
+            app.pop_undo(index);
+        }
+    }
+}
+
+/// Handles 'a' key in demo mode - returns pending operation if action should proceed
+fn handle_demo_archive(
+    app: &App,
+    ui_state: &mut UiState,
+    protect_threads: bool,
+) -> Option<DemoPendingOp> {
+    match app.view {
+        View::GroupList | View::UndoHistory => None,
+        View::EmailList => {
+            // Protect threads: require navigating into thread if it has multiple emails
+            let thread_size = app.current_thread_emails().len();
+            if protect_threads && thread_size > 1 {
+                ui_state.set_status(format!(
+                    "{} This thread has {} emails. Press Enter to review the full thread before archiving.",
+                    WARNING_CHAR, thread_size
+                ));
+                return None;
+            }
+            app.current_email()
+                .cloned()
+                .map(|email| DemoPendingOp::ArchiveSingle { email })
+        }
+        View::Thread => None,
     }
 }
 
 /// Handles 'A' key in demo mode
-fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
+fn handle_demo_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
         View::GroupList | View::UndoHistory => {}
         View::EmailList => {
             if let Some(group) = app.current_group() {
+                // Protect threads: require reviewing each thread separately if group has multi-message threads
+                if protect_threads && app.group_has_multi_message_threads(group) {
+                    ui_state.set_status(format!(
+                        "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
+                        WARNING_CHAR
+                    ));
+                    return;
+                }
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: group.count(),
@@ -409,39 +640,46 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
     }
 }
 
-/// Handles 'd' key in demo mode
-fn handle_demo_delete(app: &mut App, ui_state: &mut UiState, undo_storage: &mut DemoUndoStorage) {
+/// Handles 'd' key in demo mode - returns pending operation if action should proceed
+fn handle_demo_delete(
+    app: &App,
+    ui_state: &mut UiState,
+    protect_threads: bool,
+) -> Option<DemoPendingOp> {
     match app.view {
-        View::GroupList | View::UndoHistory => {}
+        View::GroupList | View::UndoHistory => None,
         View::EmailList => {
-            if let Some(email) = app.current_email().cloned() {
-                // Store email for undo and create undo entry
-                if let Some(ref message_id) = email.message_id {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Delete,
-                        context: UndoContext::SingleEmail {
-                            subject: email.subject.clone(),
-                        },
-                        emails: vec![(message_id.clone(), email.source_folder.clone())],
-                        current_folder: "[Gmail]/Trash".to_string(),
-                    };
-                    undo_storage.push(vec![email.clone()]);
-                    app.push_undo(undo_entry);
-                }
-                app.remove_email(&email.id);
-                ui_state.set_status("Deleted 1 email".to_string());
+            // Protect threads: require navigating into thread if it has multiple emails
+            let thread_size = app.current_thread_emails().len();
+            if protect_threads && thread_size > 1 {
+                ui_state.set_status(format!(
+                    "{} This thread has {} emails. Press Enter to review the full thread before deleting.",
+                    WARNING_CHAR, thread_size
+                ));
+                return None;
             }
+            app.current_email()
+                .cloned()
+                .map(|email| DemoPendingOp::DeleteSingle { email })
         }
-        View::Thread => {}
+        View::Thread => None,
     }
 }
 
 /// Handles 'D' key in demo mode
-fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
+fn handle_demo_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
         View::GroupList | View::UndoHistory => {}
         View::EmailList => {
             if let Some(group) = app.current_group() {
+                // Protect threads: require reviewing each thread separately if group has multi-message threads
+                if protect_threads && app.group_has_multi_message_threads(group) {
+                    ui_state.set_status(format!(
+                        "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
+                        WARNING_CHAR
+                    ));
+                    return;
+                }
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: group.count(),
@@ -459,166 +697,57 @@ fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
     }
 }
 
-/// Handles undo in demo mode
-fn handle_demo_undo(app: &mut App, ui_state: &mut UiState, undo_storage: &mut DemoUndoStorage) {
+/// Handles undo in demo mode - returns pending operation if action should proceed
+fn handle_demo_undo(app: &App, undo_storage: &mut DemoUndoStorage) -> Option<DemoPendingOp> {
     let selected_idx = app.selected_undo;
-    if let Some(emails) = undo_storage.remove(selected_idx) {
-        let count = emails.len();
-        // Restore emails to the app
-        app.restore_emails(emails);
-        // Remove the undo entry
-        app.pop_undo(selected_idx);
-        // Stay in undo view - user can close it manually with Escape
-        ui_state.set_status(format!("Restored {} email(s)", count));
-    }
+    undo_storage
+        .remove(selected_idx)
+        .map(|emails| DemoPendingOp::Undo {
+            index: selected_idx,
+            emails,
+        })
 }
 
-/// Handles confirmed actions in demo mode
-fn handle_demo_confirmed_action(
-    app: &mut App,
-    ui_state: &mut UiState,
-    undo_storage: &mut DemoUndoStorage,
-    action: ConfirmAction,
-) {
+/// Handles confirmed actions in demo mode - returns pending operation
+fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<DemoPendingOp> {
     match action {
-        ConfirmAction::ArchiveEmails { sender, count } => {
-            // Store emails for undo before removing
-            if let Some(group) = app.current_group() {
-                let emails: Vec<Email> = group.emails.clone();
-                let message_ids: Vec<(String, String)> = emails
-                    .iter()
-                    .filter_map(|e| {
-                        e.message_id
-                            .as_ref()
-                            .map(|mid| (mid.clone(), e.source_folder.clone()))
-                    })
-                    .collect();
-
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Archive,
-                        context: UndoContext::Group {
-                            sender: sender.clone(),
-                        },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/All Mail".to_string(),
-                    };
-                    undo_storage.push(emails);
-                    app.push_undo(undo_entry);
-                }
-            }
-            app.remove_current_group_emails();
-            ui_state.set_status(format!("Archived {} emails", count));
+        ConfirmAction::ArchiveEmails { sender, .. } => {
+            app.current_group()
+                .map(|group| DemoPendingOp::ArchiveGroup {
+                    emails: group.emails.clone(),
+                    sender,
+                })
         }
-        ConfirmAction::DeleteEmails { sender, count } => {
-            // Store emails for undo before removing
-            if let Some(group) = app.current_group() {
-                let emails: Vec<Email> = group.emails.clone();
-                let message_ids: Vec<(String, String)> = emails
-                    .iter()
-                    .filter_map(|e| {
-                        e.message_id
-                            .as_ref()
-                            .map(|mid| (mid.clone(), e.source_folder.clone()))
-                    })
-                    .collect();
-
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Delete,
-                        context: UndoContext::Group {
-                            sender: sender.clone(),
-                        },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/Trash".to_string(),
-                    };
-                    undo_storage.push(emails);
-                    app.push_undo(undo_entry);
-                }
-            }
-            app.remove_current_group_emails();
-            ui_state.set_status(format!("Deleted {} emails", count));
+        ConfirmAction::DeleteEmails { sender, .. } => {
+            app.current_group().map(|group| DemoPendingOp::DeleteGroup {
+                emails: group.emails.clone(),
+                sender,
+            })
         }
-        ConfirmAction::ArchiveThread {
-            thread_email_count, ..
-        } => {
-            if let Some(email) = app.current_email() {
-                let thread_id = email.thread_id.clone();
-                let subject = email.subject.clone();
-
-                // Store thread emails for undo before removing
-                let thread_emails: Vec<Email> = app
-                    .current_thread_emails()
-                    .iter()
-                    .map(|e| (*e).clone())
-                    .collect();
-                let message_ids: Vec<(String, String)> = thread_emails
-                    .iter()
-                    .filter_map(|e| {
-                        e.message_id
-                            .as_ref()
-                            .map(|mid| (mid.clone(), e.source_folder.clone()))
-                    })
-                    .collect();
-
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Archive,
-                        context: UndoContext::Thread { subject },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/All Mail".to_string(),
-                    };
-                    undo_storage.push(thread_emails);
-                    app.push_undo(undo_entry);
-                }
-
-                app.remove_thread(&thread_id);
-                if app.view == View::Thread {
-                    app.exit();
-                }
+        ConfirmAction::ArchiveThread { .. } => app.current_email().map(|email| {
+            let thread_emails: Vec<Email> = app
+                .current_thread_emails()
+                .iter()
+                .map(|e| (*e).clone())
+                .collect();
+            DemoPendingOp::ArchiveThread {
+                thread_id: email.thread_id.clone(),
+                thread_emails,
+                subject: email.subject.clone(),
             }
-            ui_state.set_status(format!("Archived thread ({} emails)", thread_email_count));
-        }
-        ConfirmAction::DeleteThread {
-            thread_email_count, ..
-        } => {
-            if let Some(email) = app.current_email() {
-                let thread_id = email.thread_id.clone();
-                let subject = email.subject.clone();
-
-                // Store thread emails for undo before removing
-                let thread_emails: Vec<Email> = app
-                    .current_thread_emails()
-                    .iter()
-                    .map(|e| (*e).clone())
-                    .collect();
-                let message_ids: Vec<(String, String)> = thread_emails
-                    .iter()
-                    .filter_map(|e| {
-                        e.message_id
-                            .as_ref()
-                            .map(|mid| (mid.clone(), e.source_folder.clone()))
-                    })
-                    .collect();
-
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Delete,
-                        context: UndoContext::Thread { subject },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/Trash".to_string(),
-                    };
-                    undo_storage.push(thread_emails);
-                    app.push_undo(undo_entry);
-                }
-
-                app.remove_thread(&thread_id);
-                if app.view == View::Thread {
-                    app.exit();
-                }
+        }),
+        ConfirmAction::DeleteThread { .. } => app.current_email().map(|email| {
+            let thread_emails: Vec<Email> = app
+                .current_thread_emails()
+                .iter()
+                .map(|e| (*e).clone())
+                .collect();
+            DemoPendingOp::DeleteThread {
+                thread_id: email.thread_id.clone(),
+                thread_emails,
+                subject: email.subject.clone(),
             }
-            ui_state.set_status(format!("Deleted thread ({} emails)", thread_email_count));
-        }
+        }),
         ConfirmAction::Quit => unreachable!(),
     }
 }
