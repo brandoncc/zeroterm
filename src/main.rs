@@ -494,6 +494,11 @@ fn run_app(
                     ui_state.set_busy("Refreshing...");
                     cmd_tx.send(ImapCommand::FetchInbox)?;
                 }
+                KeyCode::Char('t') => {
+                    if app.view == View::GroupList || app.view == View::EmailList {
+                        app.toggle_thread_filter();
+                    }
+                }
                 KeyCode::Char('a') => {
                     handle_archive(
                         &mut app,
@@ -590,11 +595,9 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) 
                 return;
             }
             if let Some(group) = app.current_group() {
-                let impact = app.current_group_thread_impact();
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: group.count(),
-                    impact,
                 });
             }
         }
@@ -664,11 +667,9 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
                 return;
             }
             if let Some(group) = app.current_group() {
-                let impact = app.current_group_thread_impact();
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: group.count(),
-                    impact,
                 });
             }
         }
