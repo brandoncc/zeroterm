@@ -77,6 +77,8 @@ pub struct App {
     emails: Vec<Email>,
     /// Cache of thread IDs that have multiple senders (for O(1) lookup)
     multi_sender_threads: HashSet<String>,
+    /// The user's email address (used to filter out sent emails from groups)
+    user_email: Option<String>,
 }
 
 impl Default for App {
@@ -96,7 +98,13 @@ impl App {
             view: View::default(),
             emails: Vec::new(),
             multi_sender_threads: HashSet::new(),
+            user_email: None,
         }
+    }
+
+    /// Sets the user's email address (used to filter sent emails from groups)
+    pub fn set_user_email(&mut self, email: String) {
+        self.user_email = Some(email);
     }
 
     /// Sets the emails and regroups them according to current mode
@@ -130,6 +138,14 @@ impl App {
         let mut group_map: HashMap<String, Vec<Email>> = HashMap::new();
 
         for email in &self.emails {
+            // Skip user's own sent emails from grouping
+            // They remain in self.emails for thread view and operations
+            if let Some(ref user_email) = self.user_email
+                && email.from_email.eq_ignore_ascii_case(user_email)
+            {
+                continue;
+            }
+
             let key = match self.group_mode {
                 GroupMode::BySenderEmail => email.from_email.clone(),
                 GroupMode::ByDomain => email.from_domain.clone(),
@@ -514,18 +530,23 @@ impl App {
         }
     }
 
-    /// Gets all email IDs in the current group
-    pub fn current_group_email_ids(&self) -> Vec<String> {
+    /// Gets all email IDs and source folders in the current group
+    pub fn current_group_email_ids(&self) -> Vec<(String, String)> {
         self.current_group()
-            .map(|g| g.emails.iter().map(|e| e.id.clone()).collect())
+            .map(|g| {
+                g.emails
+                    .iter()
+                    .map(|e| (e.id.clone(), e.source_folder.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
-    /// Gets all email IDs in the current thread
-    pub fn current_thread_email_ids(&self) -> Vec<String> {
+    /// Gets all email IDs and source folders in the current thread
+    pub fn current_thread_email_ids(&self) -> Vec<(String, String)> {
         self.current_thread_emails()
             .iter()
-            .map(|e| e.id.clone())
+            .map(|e| (e.id.clone(), e.source_folder.clone()))
             .collect()
     }
 

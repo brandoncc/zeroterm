@@ -30,10 +30,10 @@ use ui::widgets::{AccountSelection, ConfirmAction, UiState};
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
     FetchInbox,
-    ArchiveEmail(String),
-    DeleteEmail(String),
-    ArchiveMultiple(Vec<String>),
-    DeleteMultiple(Vec<String>),
+    ArchiveEmail(String, String),           // (uid, folder)
+    DeleteEmail(String, String),            // (uid, folder)
+    ArchiveMultiple(Vec<(String, String)>), // Vec<(uid, folder)>
+    DeleteMultiple(Vec<(String, String)>),  // Vec<(uid, folder)>
     Shutdown,
 }
 
@@ -178,31 +178,44 @@ fn spawn_imap_worker(
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {
                 ImapCommand::FetchInbox => {
-                    let result = client.fetch_inbox();
+                    // Fetch from both INBOX and Sent Mail
+                    let inbox_result = client.fetch_inbox();
+                    let sent_result = client.fetch_sent();
+
+                    let result = match (inbox_result, sent_result) {
+                        (Ok(mut inbox), Ok(sent)) => {
+                            inbox.extend(sent);
+                            // Build thread IDs from combined list
+                            email::build_thread_ids(&mut inbox);
+                            Ok(inbox)
+                        }
+                        (Err(e), _) => Err(e),
+                        (_, Err(e)) => Err(e),
+                    };
                     let _ = resp_tx.send(ImapResponse::Emails(result));
                 }
-                ImapCommand::ArchiveEmail(id) => {
-                    let result = client.archive_email(&id);
+                ImapCommand::ArchiveEmail(id, folder) => {
+                    let result = client.archive_email(&id, &folder);
                     let _ = resp_tx.send(ImapResponse::ArchiveResult(result));
                 }
-                ImapCommand::DeleteEmail(id) => {
-                    let result = client.delete_email(&id);
+                ImapCommand::DeleteEmail(id, folder) => {
+                    let result = client.delete_email(&id, &folder);
                     let _ = resp_tx.send(ImapResponse::DeleteResult(result));
                 }
-                ImapCommand::ArchiveMultiple(ids) => {
+                ImapCommand::ArchiveMultiple(ids_and_folders) => {
                     let mut result = Ok(());
-                    for id in &ids {
-                        if let Err(e) = client.archive_email(id) {
+                    for (id, folder) in &ids_and_folders {
+                        if let Err(e) = client.archive_email(id, folder) {
                             result = Err(e);
                             break;
                         }
                     }
                     let _ = resp_tx.send(ImapResponse::MultiArchiveResult(result));
                 }
-                ImapCommand::DeleteMultiple(ids) => {
+                ImapCommand::DeleteMultiple(ids_and_folders) => {
                     let mut result = Ok(());
-                    for id in &ids {
-                        if let Err(e) = client.delete_email(id) {
+                    for (id, folder) in &ids_and_folders {
+                        if let Err(e) = client.delete_email(id, folder) {
                             result = Err(e);
                             break;
                         }
@@ -227,6 +240,7 @@ fn run_app(
     let (account_name, account_config) = account;
     let user_email = account_config.email.clone();
     let mut app = App::new();
+    app.set_user_email(user_email.clone());
     let mut ui_state = UiState::new();
 
     // Create channels for IMAP communication
@@ -476,12 +490,12 @@ fn run_app(
 
 /// Tracks pending operations so we know what to update when response arrives
 enum PendingOp {
-    ArchiveSingle(String),
-    DeleteSingle(String),
+    ArchiveSingle(String), // email id
+    DeleteSingle(String),  // email id
     ArchiveGroup,
     DeleteGroup,
-    ArchiveThread(String),
-    DeleteThread(String),
+    ArchiveThread(String), // thread id
+    DeleteThread(String),  // thread id
 }
 
 /// Handles the 'a' key - archive single email (not available in thread view)
@@ -500,7 +514,10 @@ fn handle_archive(
             if let Some(email) = app.current_email().cloned() {
                 ui_state.set_busy("Archiving...");
                 *pending_operation = Some(PendingOp::ArchiveSingle(email.id.clone()));
-                cmd_tx.send(ImapCommand::ArchiveEmail(email.id))?;
+                cmd_tx.send(ImapCommand::ArchiveEmail(
+                    email.id,
+                    email.source_folder.clone(),
+                ))?;
             }
         }
         View::Thread => {
@@ -554,7 +571,10 @@ fn handle_delete(
             if let Some(email) = app.current_email().cloned() {
                 ui_state.set_busy("Deleting...");
                 *pending_operation = Some(PendingOp::DeleteSingle(email.id.clone()));
-                cmd_tx.send(ImapCommand::DeleteEmail(email.id))?;
+                cmd_tx.send(ImapCommand::DeleteEmail(
+                    email.id,
+                    email.source_folder.clone(),
+                ))?;
             }
         }
         View::Thread => {
@@ -654,7 +674,7 @@ fn handle_confirmed_action(
             }
         }
         ConfirmAction::ArchiveThread { .. } => {
-            // Archive entire thread
+            // Archive entire thread (including user's sent emails)
             let email_ids = app.current_thread_email_ids();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
             if !email_ids.is_empty()
@@ -666,7 +686,7 @@ fn handle_confirmed_action(
             }
         }
         ConfirmAction::DeleteThread { .. } => {
-            // Delete entire thread
+            // Delete entire thread (including user's sent emails)
             let email_ids = app.current_thread_email_ids();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
             if !email_ids.is_empty()

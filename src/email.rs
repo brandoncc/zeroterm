@@ -19,6 +19,8 @@ pub struct Email {
     pub in_reply_to: Option<String>,
     /// The References header (list of all Message-IDs in the conversation chain)
     pub references: Vec<String>,
+    /// The IMAP folder this email came from ("INBOX" or "[Gmail]/Sent Mail")
+    pub source_folder: String,
 }
 
 /// Builder for creating Email instances
@@ -32,6 +34,7 @@ pub struct EmailBuilder {
     message_id: Option<String>,
     in_reply_to: Option<String>,
     references: Vec<String>,
+    source_folder: String,
 }
 
 impl EmailBuilder {
@@ -79,6 +82,11 @@ impl EmailBuilder {
         self
     }
 
+    pub fn source_folder(mut self, source_folder: impl Into<String>) -> Self {
+        self.source_folder = source_folder.into();
+        self
+    }
+
     pub fn build(self) -> Email {
         let from_email = extract_email(&self.from);
         let from_domain = extract_domain(&from_email);
@@ -95,6 +103,11 @@ impl EmailBuilder {
             message_id: self.message_id,
             in_reply_to: self.in_reply_to,
             references: self.references,
+            source_folder: if self.source_folder.is_empty() {
+                "INBOX".to_string()
+            } else {
+                self.source_folder
+            },
         }
     }
 }
@@ -238,6 +251,7 @@ impl Email {
             message_id: None,
             in_reply_to: None,
             references: Vec::new(),
+            source_folder: "INBOX".to_string(),
         }
     }
 }
