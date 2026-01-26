@@ -644,7 +644,7 @@ impl StatefulWidget for EmailListWidget<'_> {
 
         // Show message if group is empty (all emails deleted/archived)
         if filtered_threads.is_empty() && self.app.current_group().is_none() {
-            let msg = "No messages (press Esc to go back)";
+            let msg = "No messages (press q to go back)";
             let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
             let y = inner.y + inner.height / 2;
             buf.set_line(
