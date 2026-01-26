@@ -531,6 +531,20 @@ impl Widget for GroupListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
+        // Show message if filter is active but no groups have threads
+        if filtered_groups.is_empty() && self.app.filter_to_threads {
+            let msg = "No groups with threads (press t to show all)";
+            let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
+            let y = inner.y + inner.height / 2;
+            buf.set_line(
+                x,
+                y,
+                &Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray))),
+                inner.width,
+            );
+            return;
+        }
+
         // Get the currently selected group to match by key
         let selected_key = self.app.groups.get(self.app.selected_group).map(|g| &g.key);
 
