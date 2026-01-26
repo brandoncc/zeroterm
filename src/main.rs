@@ -115,11 +115,14 @@ fn select_account(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     cfg: &config::Config,
 ) -> Result<Option<(String, AccountConfig)>> {
-    let accounts: Vec<(String, AccountConfig)> = cfg
+    let mut accounts: Vec<(String, AccountConfig)> = cfg
         .accounts
         .iter()
         .map(|(name, account)| (name.clone(), account.clone()))
         .collect();
+
+    // Sort accounts alphabetically by name (case-insensitive)
+    accounts.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
 
     let mut selection = AccountSelection::new(accounts);
 
