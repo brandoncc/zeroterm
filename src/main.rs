@@ -18,10 +18,11 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::{App, View};
+use config::AccountConfig;
 use email::Email;
 use imap_client::{EmailClient, ImapClient};
-use ui::render::render;
-use ui::widgets::{ConfirmAction, UiState};
+use ui::render::{render, render_account_select};
+use ui::widgets::{AccountSelection, ConfirmAction, UiState};
 
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
@@ -48,19 +49,24 @@ fn main() -> Result<()> {
     // Initialize
     config::ensure_config_dir()?;
 
-    // Check for credentials
-    if !config::has_credentials() {
+    // Check for config
+    if !config::has_config() {
         eprintln!(
-            "Error: Credentials not found.\n\
-             Please create a credentials.toml file at {:?}\n\
+            "Error: Configuration not found.\n\
+             Please create a config.toml file at {:?}\n\
              with the following format:\n\n\
+             [accounts.personal]\n\
+             backend = \"gmail\"\n\
              email = \"your.email@gmail.com\"\n\
              app_password = \"xxxx xxxx xxxx xxxx\"\n\n\
              Create an App Password at: https://myaccount.google.com/apppasswords",
-            config::credentials_path()?
+            config::config_path()?
         );
         std::process::exit(1);
     }
+
+    // Load config
+    let cfg = config::load_config()?;
 
     // Set up terminal
     enable_raw_mode()?;
@@ -69,8 +75,20 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Run the app
-    let result = run_app(&mut terminal);
+    // Select account (if multiple) or use the only one
+    let selected_account = if cfg.accounts.len() > 1 {
+        select_account(&mut terminal, &cfg)?
+    } else {
+        let (name, account) = config::get_default_account(&cfg)?;
+        Some((name.clone(), account.clone()))
+    };
+
+    // User may have quit during account selection
+    let result = if let Some(account) = selected_account {
+        run_app(&mut terminal, account)
+    } else {
+        Ok(())
+    };
 
     // Restore terminal
     disable_raw_mode()?;
@@ -89,22 +107,58 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Spawns the IMAP worker thread
-fn spawn_imap_worker(cmd_rx: mpsc::Receiver<ImapCommand>, resp_tx: mpsc::Sender<ImapResponse>) {
-    thread::spawn(move || {
-        // Connect to IMAP
-        let credentials = match config::load_credentials() {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = resp_tx.send(ImapResponse::Error(format!(
-                    "Failed to load credentials: {}",
-                    e
-                )));
-                return;
-            }
-        };
+/// Shows account selection UI and returns the selected account
+fn select_account(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    cfg: &config::Config,
+) -> Result<Option<(String, AccountConfig)>> {
+    let accounts: Vec<(String, AccountConfig)> = cfg
+        .accounts
+        .iter()
+        .map(|(name, account)| (name.clone(), account.clone()))
+        .collect();
 
-        let mut client = match ImapClient::connect(&credentials.email, &credentials.app_password) {
+    let mut selection = AccountSelection::new(accounts);
+
+    loop {
+        terminal.draw(|f| render_account_select(f, &selection))?;
+
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char('q') => {
+                    return Ok(None);
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    selection.select_next();
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    selection.select_previous();
+                }
+                KeyCode::Enter => {
+                    if let Some((name, account)) = selection.current_account() {
+                        return Ok(Some((name.clone(), account.clone())));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Spawns the IMAP worker thread
+fn spawn_imap_worker(
+    cmd_rx: mpsc::Receiver<ImapCommand>,
+    resp_tx: mpsc::Sender<ImapResponse>,
+    account: AccountConfig,
+) {
+    thread::spawn(move || {
+        let mut client = match ImapClient::connect(&account.email, &account.app_password) {
             Ok(c) => c,
             Err(e) => {
                 let _ = resp_tx.send(ImapResponse::Error(format!("Failed to connect: {}", e)));
@@ -160,7 +214,11 @@ fn spawn_imap_worker(cmd_rx: mpsc::Receiver<ImapCommand>, resp_tx: mpsc::Sender<
     });
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    account: (String, AccountConfig),
+) -> Result<()> {
+    let (account_name, account_config) = account;
     let mut app = App::new();
     let mut ui_state = UiState::new();
 
@@ -169,11 +227,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
     let (resp_tx, resp_rx) = mpsc::channel::<ImapResponse>();
 
     // Show connecting status
-    ui_state.set_busy("Connecting...");
+    ui_state.set_busy(format!("Connecting to {}...", account_name));
     terminal.draw(|f| render(f, &app, &ui_state))?;
 
     // Spawn IMAP worker thread
-    spawn_imap_worker(cmd_rx, resp_tx);
+    spawn_imap_worker(cmd_rx, resp_tx, account_config);
 
     // Wait for connection
     loop {

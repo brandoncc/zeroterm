@@ -1,19 +1,36 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
 const APP_NAME: &str = "zeroterm";
-const CREDENTIALS_FILE: &str = "credentials.toml";
+const CONFIG_FILE: &str = "config.toml";
 
-/// IMAP credentials for Gmail access
+/// Supported email backends
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    Gmail,
+}
+
+/// Configuration for a single email account
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Credentials {
-    /// Gmail email address
+pub struct AccountConfig {
+    /// The backend type for this account
+    pub backend: Backend,
+    /// Email address
     pub email: String,
-    /// Gmail App Password (not regular password)
+    /// App Password (not regular password)
     pub app_password: String,
+}
+
+/// Top-level configuration containing all accounts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// Named accounts, keyed by account name
+    pub accounts: HashMap<String, AccountConfig>,
 }
 
 /// Returns the configuration directory path
@@ -23,9 +40,9 @@ pub fn config_dir() -> Result<PathBuf> {
     Ok(xdg_dirs.get_config_home())
 }
 
-/// Returns the path to the credentials file
-pub fn credentials_path() -> Result<PathBuf> {
-    config_dir().map(|p| p.join(CREDENTIALS_FILE))
+/// Returns the path to the config file
+pub fn config_path() -> Result<PathBuf> {
+    config_dir().map(|p| p.join(CONFIG_FILE))
 }
 
 /// Ensures the config directory exists
@@ -37,9 +54,9 @@ pub fn ensure_config_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Checks if credentials file exists
-pub fn has_credentials() -> bool {
-    credentials_path().map(|p| p.exists()).unwrap_or(false)
+/// Checks if config file exists
+pub fn has_config() -> bool {
+    config_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 /// Trait for resolving secrets, allowing for mocking in tests
@@ -71,28 +88,51 @@ impl SecretResolver for OpSecretResolver {
     }
 }
 
-/// Loads credentials from the config file
-pub fn load_credentials() -> Result<Credentials> {
-    load_credentials_with_resolver(&OpSecretResolver)
+/// Loads config from the config file
+pub fn load_config() -> Result<Config> {
+    load_config_with_resolver(&OpSecretResolver)
 }
 
-/// Loads credentials using a provided secret resolver (for testing)
-pub fn load_credentials_with_resolver(resolver: &impl SecretResolver) -> Result<Credentials> {
-    let path = credentials_path()?;
+/// Loads config using a provided secret resolver (for testing)
+pub fn load_config_with_resolver(resolver: &impl SecretResolver) -> Result<Config> {
+    let path = config_path()?;
     let content = fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read credentials from {:?}", path))?;
-    let credentials: Credentials =
-        toml::from_str(&content).context("Failed to parse credentials.toml")?;
+        .with_context(|| format!("Failed to read config from {:?}", path))?;
+    let config: Config = toml::from_str(&content).context("Failed to parse config.toml")?;
 
-    // Resolve app_password if it's a secret reference (e.g., op://vault/item/field)
-    let resolved_password = resolver
-        .resolve(&credentials.app_password)
-        .context("Failed to resolve app_password")?;
+    if config.accounts.is_empty() {
+        anyhow::bail!("No accounts configured in config.toml");
+    }
 
-    Ok(Credentials {
-        email: credentials.email,
-        app_password: resolved_password,
+    // Resolve app_password for each account
+    let mut resolved_accounts = HashMap::new();
+    for (name, account) in config.accounts {
+        let resolved_password = resolver
+            .resolve(&account.app_password)
+            .with_context(|| format!("Failed to resolve app_password for account '{}'", name))?;
+
+        resolved_accounts.insert(
+            name,
+            AccountConfig {
+                backend: account.backend,
+                email: account.email,
+                app_password: resolved_password,
+            },
+        );
+    }
+
+    Ok(Config {
+        accounts: resolved_accounts,
     })
+}
+
+/// Gets the first account from the config (useful when only one account exists)
+pub fn get_default_account(config: &Config) -> Result<(&String, &AccountConfig)> {
+    config
+        .accounts
+        .iter()
+        .next()
+        .context("No accounts configured")
 }
 
 #[cfg(test)]
@@ -108,22 +148,78 @@ mod tests {
     }
 
     #[test]
-    fn test_credentials_path() {
-        let path = credentials_path();
+    fn test_config_path() {
+        let path = config_path();
         assert!(path.is_ok());
         let path = path.unwrap();
-        assert!(path.ends_with(CREDENTIALS_FILE));
+        assert!(path.ends_with(CONFIG_FILE));
     }
 
     #[test]
-    fn test_parse_credentials() {
+    fn test_parse_single_account_config() {
         let toml_content = r#"
+[accounts.personal]
+backend = "gmail"
 email = "user@gmail.com"
 app_password = "xxxx xxxx xxxx xxxx"
 "#;
-        let credentials: Credentials = toml::from_str(toml_content).unwrap();
-        assert_eq!(credentials.email, "user@gmail.com");
-        assert_eq!(credentials.app_password, "xxxx xxxx xxxx xxxx");
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert_eq!(config.accounts.len(), 1);
+        let account = config.accounts.get("personal").unwrap();
+        assert_eq!(account.backend, Backend::Gmail);
+        assert_eq!(account.email, "user@gmail.com");
+        assert_eq!(account.app_password, "xxxx xxxx xxxx xxxx");
+    }
+
+    #[test]
+    fn test_parse_multiple_accounts_config() {
+        let toml_content = r#"
+[accounts.personal]
+backend = "gmail"
+email = "personal@gmail.com"
+app_password = "xxxx xxxx xxxx xxxx"
+
+[accounts.work]
+backend = "gmail"
+email = "work@company.com"
+app_password = "yyyy yyyy yyyy yyyy"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert_eq!(config.accounts.len(), 2);
+
+        let personal = config.accounts.get("personal").unwrap();
+        assert_eq!(personal.backend, Backend::Gmail);
+        assert_eq!(personal.email, "personal@gmail.com");
+
+        let work = config.accounts.get("work").unwrap();
+        assert_eq!(work.backend, Backend::Gmail);
+        assert_eq!(work.email, "work@company.com");
+    }
+
+    #[test]
+    fn test_backend_requires_valid_value() {
+        let toml_content = r#"
+[accounts.test]
+backend = "outlook"
+email = "user@outlook.com"
+app_password = "xxxx"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_default_account() {
+        let toml_content = r#"
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        let (name, account) = get_default_account(&config).unwrap();
+        assert_eq!(name, "personal");
+        assert_eq!(account.email, "user@gmail.com");
     }
 
     #[test]
