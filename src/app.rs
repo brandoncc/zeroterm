@@ -657,18 +657,19 @@ impl App {
         self.emails.retain(|e| e.id != email_id);
         self.regroup();
 
-        // Adjust selected_email if needed (based on thread count)
-        if let Some(group) = self.groups.get(self.selected_group)
-            && let Some(idx) = self.selected_email
-        {
+        // Adjust selected_email for the (possibly changed) current group
+        if let Some(group) = self.groups.get(self.selected_group) {
             let threads = group.threads();
-            if idx >= threads.len() {
-                self.selected_email = if threads.is_empty() {
-                    None
-                } else {
-                    Some(threads.len() - 1)
-                };
+            if threads.is_empty() {
+                self.selected_email = None;
+            } else if self.selected_email.is_none()
+                || self.selected_email.is_some_and(|idx| idx >= threads.len())
+            {
+                // Ensure a valid selection exists
+                self.selected_email = Some(threads.len().saturating_sub(1));
             }
+        } else {
+            self.selected_email = None;
         }
     }
 
@@ -677,18 +678,19 @@ impl App {
         self.emails.retain(|e| e.thread_id != thread_id);
         self.regroup();
 
-        // Adjust selections (based on thread count)
-        if let Some(group) = self.groups.get(self.selected_group)
-            && let Some(idx) = self.selected_email
-        {
+        // Adjust selected_email for the (possibly changed) current group
+        if let Some(group) = self.groups.get(self.selected_group) {
             let threads = group.threads();
-            if idx >= threads.len() {
-                self.selected_email = if threads.is_empty() {
-                    None
-                } else {
-                    Some(threads.len() - 1)
-                };
+            if threads.is_empty() {
+                self.selected_email = None;
+            } else if self.selected_email.is_none()
+                || self.selected_email.is_some_and(|idx| idx >= threads.len())
+            {
+                // Ensure a valid selection exists
+                self.selected_email = Some(threads.len().saturating_sub(1));
             }
+        } else {
+            self.selected_email = None;
         }
         self.selected_thread_email = None;
     }
@@ -700,12 +702,18 @@ impl App {
             self.emails.retain(|e| !ids_to_remove.contains(&e.id));
         }
         self.regroup();
-        self.selected_email = None;
 
         // If we removed the last group, adjust selection
         if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
             self.selected_group = self.groups.len() - 1;
         }
+
+        // Update selected_email based on the (possibly new) current group
+        self.selected_email = self
+            .groups
+            .get(self.selected_group)
+            .filter(|g| !g.threads().is_empty())
+            .map(|_| 0);
     }
 
     /// Restores emails back into the app (for undo support)
@@ -1162,6 +1170,58 @@ mod tests {
         // thread_a is removed entirely (including bob), only charlie remains
         assert_eq!(app.emails.len(), 1);
         assert_eq!(app.emails[0].from_email, "charlie@example.com");
+    }
+
+    #[test]
+    fn test_remove_group_emails_selects_first_in_new_group() {
+        // Regression test: when deleting all emails from a group causes a switch
+        // to a different group, selected_email should be Some(0), not None
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+        ]);
+
+        // Enter alice's group (should be first due to alphabetical sort)
+        let alice_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "alice@example.com")
+            .unwrap();
+        app.selected_group = alice_idx;
+        app.enter(); // Enter EmailList view
+        assert_eq!(app.view, View::EmailList);
+        assert_eq!(app.selected_email, Some(0));
+
+        // Delete all of alice's emails
+        app.remove_current_group_emails();
+
+        // Now bob's group should be selected, with first email selected
+        assert_eq!(app.groups.len(), 1);
+        assert_eq!(app.groups[0].key, "bob@example.com");
+        assert_eq!(
+            app.selected_email,
+            Some(0),
+            "selected_email should be Some(0) after switching to new group"
+        );
+    }
+
+    #[test]
+    fn test_remove_email_maintains_valid_selection() {
+        // Regression test: ensure selected_email is valid after email removal
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+
+        app.enter(); // Enter EmailList view
+        app.select_next(); // Select second email
+        assert_eq!(app.selected_email, Some(1));
+
+        // Remove one email, selection should adjust to remain valid
+        app.remove_email("2");
+        assert_eq!(app.selected_email, Some(0));
     }
 
     #[test]
