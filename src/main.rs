@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -229,7 +231,7 @@ fn run_app(
 
     // Show connecting status
     ui_state.set_busy(format!("Connecting to {}...", account_name));
-    terminal.draw(|f| render(f, &app, &ui_state))?;
+    terminal.draw(|f| render(f, &app, &mut ui_state))?;
 
     // Spawn IMAP worker thread
     spawn_imap_worker(cmd_rx, resp_tx, account_config);
@@ -240,7 +242,7 @@ fn run_app(
         match resp_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(ImapResponse::Connected) => {
                 ui_state.set_busy("Loading emails...");
-                terminal.draw(|f| render(f, &app, &ui_state))?;
+                terminal.draw(|f| render(f, &app, &mut ui_state))?;
                 cmd_tx.send(ImapCommand::FetchInbox)?;
                 break;
             }
@@ -271,7 +273,7 @@ fn run_app(
             ui_state.tick_spinner();
         }
 
-        terminal.draw(|f| render(f, &app, &ui_state))?;
+        terminal.draw(|f| render(f, &app, &mut ui_state))?;
 
         // Check for IMAP responses (non-blocking)
         while let Ok(response) = resp_rx.try_recv() {
@@ -388,6 +390,14 @@ fn run_app(
                     } else {
                         app.exit();
                     }
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let half_page = ui_state.viewport_heights.for_view(app.view) / 2;
+                    app.select_next_n(half_page.max(1));
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let half_page = ui_state.viewport_heights.for_view(app.view) / 2;
+                    app.select_previous_n(half_page.max(1));
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     app.select_next();

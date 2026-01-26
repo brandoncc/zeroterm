@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table, Widget},
+    widgets::{Block, Borders, Paragraph, Row, StatefulWidget, Table, TableState, Widget},
 };
 
 use crate::app::{App, GroupMode, ThreadImpact, ThreadWarning, View};
@@ -132,6 +132,25 @@ impl ConfirmAction {
 /// Spinner frames for animated busy indicator
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// Tracks viewport heights for each view to enable half-page scrolling
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ViewportHeights {
+    pub group_list: usize,
+    pub email_list: usize,
+    pub thread_view: usize,
+}
+
+impl ViewportHeights {
+    /// Returns the viewport height for the given view
+    pub fn for_view(&self, view: View) -> usize {
+        match view {
+            View::GroupList => self.group_list,
+            View::EmailList => self.email_list,
+            View::Thread => self.thread_view,
+        }
+    }
+}
+
 /// UI state that supplements App state
 #[derive(Debug, Default)]
 pub struct UiState {
@@ -141,6 +160,10 @@ pub struct UiState {
     pub busy: bool,
     /// Frame counter for spinner animation
     pub spinner_frame: usize,
+    /// Viewport heights for half-page scrolling
+    pub viewport_heights: ViewportHeights,
+    /// Scroll offset for group list (manual scrolling since it uses custom rendering)
+    pub group_scroll_offset: usize,
 }
 
 impl UiState {
@@ -255,11 +278,12 @@ impl Widget for BusyModalWidget<'_> {
 /// Widget for rendering the group list
 pub struct GroupListWidget<'a> {
     app: &'a App,
+    scroll_offset: usize,
 }
 
 impl<'a> GroupListWidget<'a> {
-    pub fn new(app: &'a App) -> Self {
-        Self { app }
+    pub fn new(app: &'a App, scroll_offset: usize) -> Self {
+        Self { app, scroll_offset }
     }
 }
 
@@ -281,8 +305,9 @@ impl Widget for GroupListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        for (i, group) in self.app.groups.iter().enumerate() {
-            if i >= inner.height as usize {
+        for (i, group) in self.app.groups.iter().enumerate().skip(self.scroll_offset) {
+            let row_index = i - self.scroll_offset;
+            if row_index >= inner.height as usize {
                 break;
             }
 
@@ -313,7 +338,12 @@ impl Widget for GroupListWidget<'_> {
             };
             let span = Span::styled(line, style);
 
-            buf.set_line(inner.x, inner.y + i as u16, &Line::from(span), inner.width);
+            buf.set_line(
+                inner.x,
+                inner.y + row_index as u16,
+                &Line::from(span),
+                inner.width,
+            );
         }
     }
 }
@@ -329,8 +359,10 @@ impl<'a> EmailListWidget<'a> {
     }
 }
 
-impl Widget for EmailListWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl StatefulWidget for EmailListWidget<'_> {
+    type State = TableState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let title = self
             .app
             .current_group()
@@ -358,18 +390,8 @@ impl Widget for EmailListWidget<'_> {
             let rows: Vec<Row> = group
                 .emails
                 .iter()
-                .enumerate()
-                .map(|(i, email)| {
-                    let is_selected = self.app.selected_email == Some(i);
+                .map(|email| {
                     let has_other_senders = self.app.thread_has_multiple_senders(&email.thread_id);
-
-                    let style = if is_selected {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
 
                     let thread_indicator = if has_other_senders { "◈" } else { " " };
                     let date_str = format_date(&email.date);
@@ -379,7 +401,6 @@ impl Widget for EmailListWidget<'_> {
                         thread_indicator.to_string(),
                         email.subject.clone(),
                     ])
-                    .style(style)
                 })
                 .collect();
 
@@ -390,9 +411,14 @@ impl Widget for EmailListWidget<'_> {
                     Constraint::Length(1),  // Thread indicator
                     Constraint::Min(20),    // Subject
                 ],
+            )
+            .row_highlight_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             );
 
-            Widget::render(table, inner, buf);
+            StatefulWidget::render(table, inner, buf, state);
         }
     }
 }
@@ -408,8 +434,10 @@ impl<'a> ThreadViewWidget<'a> {
     }
 }
 
-impl Widget for ThreadViewWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl StatefulWidget for ThreadViewWidget<'_> {
+    type State = TableState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let thread_emails = self.app.current_thread_emails();
         let thread_count = thread_emails.len();
         let title = self
@@ -434,16 +462,10 @@ impl Widget for ThreadViewWidget<'_> {
 
         let rows: Vec<Row> = thread_emails
             .iter()
-            .enumerate()
-            .map(|(i, email)| {
-                let is_selected = self.app.selected_thread_email == Some(i);
+            .map(|email| {
                 let is_other_sender = current_sender.is_some_and(|s| s != &email.from_email);
 
-                let style = if is_selected {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else if is_other_sender {
+                let style = if is_other_sender {
                     Style::default().fg(Color::Cyan)
                 } else {
                     Style::default()
@@ -467,9 +489,14 @@ impl Widget for ThreadViewWidget<'_> {
                 Constraint::Length(30), // Sender email
                 Constraint::Min(20),    // Subject
             ],
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         );
 
-        Widget::render(table, inner, buf);
+        StatefulWidget::render(table, inner, buf, state);
     }
 }
 
@@ -488,13 +515,13 @@ impl Widget for HelpBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let help_text = match self.app.view {
             View::GroupList => {
-                "j/↓: next | k/↑: prev | Enter: open | A: archive all | D: delete all | g: toggle mode | r: refresh | q: quit"
+                "j/↓: next | k/↑: prev | ^d/^u: half page | Enter: open | A: archive all | D: delete all | g: toggle mode | r: refresh | q: quit"
             }
             View::EmailList => {
-                "j/↓: next | k/↑: prev | Enter: view thread | a: archive | A: archive all | d: delete | D: delete all | g: toggle | q: back"
+                "j/↓: next | k/↑: prev | ^d/^u: half page | Enter: thread | a/A: archive | d/D: delete | g: toggle | q: back"
             }
             View::Thread => {
-                "j/↓: next | k/↑: prev | Enter: open in browser | A: archive thread | D: delete thread | q: back"
+                "j/↓: next | k/↑: prev | ^d/^u: half page | Enter: browser | A: archive | D: delete | q: back"
             }
         };
 
