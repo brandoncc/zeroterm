@@ -44,35 +44,27 @@ pub enum ConfirmAction {
 }
 
 impl ConfirmAction {
-    pub fn message(&self) -> Vec<String> {
+    pub fn message(&self) -> String {
         match self {
             ConfirmAction::ArchiveEmails { sender, count } => {
-                vec![
-                    format!("Archive {} email(s) from {}?", count, sender),
-                    "(y/n)".to_string(),
-                ]
+                format!("📥 Archive {} email(s) from {}? (y/n)", count, sender)
             }
             ConfirmAction::DeleteEmails { sender, count } => {
-                vec![
-                    format!("Delete {} email(s) from {}?", count, sender),
-                    "(y/n)".to_string(),
-                ]
+                format!("🗑  Delete {} email(s) from {}? (y/n)", count, sender)
             }
             ConfirmAction::ArchiveThread { thread_email_count } => {
-                vec![
-                    format!("Archive entire thread ({} email(s))?", thread_email_count),
-                    "(y/n)".to_string(),
-                ]
+                format!(
+                    "📥 Archive entire thread ({} email(s))? (y/n)",
+                    thread_email_count
+                )
             }
             ConfirmAction::DeleteThread { thread_email_count } => {
-                vec![
-                    format!("Delete entire thread ({} email(s))?", thread_email_count),
-                    "(y/n)".to_string(),
-                ]
+                format!(
+                    "🗑  Delete entire thread ({} email(s))? (y/n)",
+                    thread_email_count
+                )
             }
-            ConfirmAction::Quit => {
-                vec!["Quit zeroterm?".to_string(), "(y/n)".to_string()]
-            }
+            ConfirmAction::Quit => "🚪 Quit zeroterm? (y/n)".to_string(),
         }
     }
 }
@@ -608,33 +600,51 @@ impl<'a> ConfirmDialogWidget<'a> {
 
 impl Widget for ConfirmDialogWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        use unicode_width::UnicodeWidthStr;
+
+        let message = self.action.message();
+        let msg_width = message.width() as u16;
+
+        // Calculate box size based on content (message + horizontal and vertical padding)
+        let horizontal_padding = 4_u16; // 2 chars on each side
+        let vertical_padding = 2_u16; // 1 line above and below
+        let box_width = (msg_width + horizontal_padding + 2)
+            .max(20)
+            .min(area.width.saturating_sub(4));
+        let box_height = 3 + vertical_padding; // border + padding + content + padding + border
+
+        // Center the box
+        let x = area.x + (area.width.saturating_sub(box_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(box_height)) / 2;
+
+        let modal_area = Rect::new(x, y, box_width, box_height);
+
+        // Clear the area behind the modal
+        for row in modal_area.y..modal_area.y + modal_area.height {
+            for col in modal_area.x..modal_area.x + modal_area.width {
+                buf[(col, row)].set_char(' ');
+                buf[(col, row)].set_style(Style::default());
+            }
+        }
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Confirm ")
-            .style(Style::default().fg(Color::Red));
+            .border_style(Style::default().fg(Color::Red));
 
-        let inner = block.inner(area);
-        block.render(area, buf);
+        let inner = block.inner(modal_area);
+        block.render(modal_area, buf);
 
-        let lines = self.action.message();
-        for (i, line) in lines.iter().enumerate() {
-            if i >= inner.height as usize {
-                break;
-            }
+        // Center the message horizontally and vertically within the inner area
+        let msg_x = inner.x + inner.width.saturating_sub(msg_width) / 2;
+        let msg_y = inner.y + inner.height / 2;
 
-            let style = if line.starts_with(WARNING_CHAR) {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
-            buf.set_line(
-                inner.x,
-                inner.y + i as u16,
-                &Line::from(Span::styled(line.clone(), style)),
-                inner.width,
-            );
-        }
+        buf.set_line(
+            msg_x,
+            msg_y,
+            &Line::from(Span::styled(message, Style::default().fg(Color::White))),
+            inner.width,
+        );
     }
 }
 
@@ -736,10 +746,9 @@ mod tests {
             sender: "test@example.com".to_string(),
             count: 5,
         };
-        let lines = action.message();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("Archive 5 email(s)"));
-        assert!(lines[0].contains("test@example.com"));
+        let msg = action.message();
+        assert!(msg.contains("Archive 5 email(s)"));
+        assert!(msg.contains("test@example.com"));
     }
 
     #[test]
@@ -748,10 +757,9 @@ mod tests {
             sender: "test@example.com".to_string(),
             count: 3,
         };
-        let lines = action.message();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("Delete 3 email(s)"));
-        assert!(lines[0].contains("test@example.com"));
+        let msg = action.message();
+        assert!(msg.contains("Delete 3 email(s)"));
+        assert!(msg.contains("test@example.com"));
     }
 
     #[test]
@@ -759,17 +767,16 @@ mod tests {
         let action = ConfirmAction::DeleteThread {
             thread_email_count: 3,
         };
-        let lines = action.message();
-        assert!(lines[0].contains("Delete entire thread"));
-        assert!(lines[0].contains("3 email(s)"));
+        let msg = action.message();
+        assert!(msg.contains("Delete entire thread"));
+        assert!(msg.contains("3 email(s)"));
     }
 
     #[test]
     fn test_confirm_action_quit() {
         let action = ConfirmAction::Quit;
-        let lines = action.message();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("Quit"));
+        let msg = action.message();
+        assert!(msg.contains("Quit"));
     }
 
     #[test]

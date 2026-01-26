@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     widgets::{Block, Borders, TableState},
 };
 
@@ -65,9 +65,8 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
 
     // Render confirmation dialog if active
     if let Some(action) = &ui_state.confirm_action {
-        let dialog_area = centered_rect(60, 30, frame.area());
         let dialog = ConfirmDialogWidget::new(action);
-        frame.render_widget(dialog, dialog_area);
+        frame.render_widget(dialog, frame.area());
     }
 
     // Render busy modal if active (takes priority over confirmation)
@@ -92,42 +91,4 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
 pub fn render_account_select(frame: &mut Frame, selection: &AccountSelection) {
     let widget = AccountSelectWidget::new(selection);
     frame.render_widget(widget, frame.area());
-}
-
-/// Creates a centered rectangle for dialogs
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_centered_rect() {
-        let area = Rect::new(0, 0, 100, 100);
-        let centered = centered_rect(50, 50, area);
-
-        // Should be roughly centered
-        assert!(centered.x > 0);
-        assert!(centered.y > 0);
-        assert!(centered.width < area.width);
-        assert!(centered.height < area.height);
-    }
 }
