@@ -22,33 +22,6 @@ pub struct Email {
 }
 
 impl Email {
-    /// Creates a new Email, automatically extracting email and domain from the from field
-    pub fn new(
-        id: String,
-        thread_id: String,
-        from: String,
-        subject: String,
-        snippet: String,
-        date: DateTime<Utc>,
-    ) -> Self {
-        let from_email = extract_email(&from);
-        let from_domain = extract_domain(&from_email);
-
-        Self {
-            id,
-            thread_id,
-            from,
-            from_email,
-            from_domain,
-            subject,
-            snippet,
-            date,
-            message_id: None,
-            in_reply_to: None,
-            references: Vec::new(),
-        }
-    }
-
     /// Creates a new Email with threading headers
     pub fn with_headers(
         id: String,
@@ -160,6 +133,36 @@ fn union(parent: &mut [usize], i: usize, j: usize) {
             parent[root_j] = root_i;
         } else {
             parent[root_i] = root_j;
+        }
+    }
+}
+
+#[cfg(test)]
+impl Email {
+    /// Creates a new Email, automatically extracting email and domain from the from field
+    pub fn new(
+        id: String,
+        thread_id: String,
+        from: String,
+        subject: String,
+        snippet: String,
+        date: DateTime<Utc>,
+    ) -> Self {
+        let from_email = extract_email(&from);
+        let from_domain = extract_domain(&from_email);
+
+        Self {
+            id,
+            thread_id,
+            from,
+            from_email,
+            from_domain,
+            subject,
+            snippet,
+            date,
+            message_id: None,
+            in_reply_to: None,
+            references: Vec::new(),
         }
     }
 }

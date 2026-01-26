@@ -102,11 +102,6 @@ impl App {
         self.regroup();
     }
 
-    /// Returns all emails (for thread lookups)
-    pub fn all_emails(&self) -> &[Email] {
-        &self.emails
-    }
-
     /// Regroups emails according to the current group mode
     fn regroup(&mut self) {
         let mut group_map: HashMap<String, Vec<Email>> = HashMap::new();
@@ -311,13 +306,6 @@ impl App {
         thread_emails
     }
 
-    /// Gets the currently selected email in thread view
-    pub fn current_thread_email(&self) -> Option<&Email> {
-        let thread_emails = self.current_thread_emails();
-        self.selected_thread_email
-            .and_then(|idx| thread_emails.get(idx).copied())
-    }
-
     /// Checks if a thread has emails from multiple senders
     pub fn thread_has_multiple_senders(&self, thread_id: &str) -> bool {
         let senders: HashSet<&str> = self
@@ -388,30 +376,6 @@ impl App {
         ThreadImpact { warning }
     }
 
-    /// Calculates the impact of archiving/deleting the currently selected email
-    pub fn current_email_thread_impact(&self) -> ThreadImpact {
-        let Some(email) = self.current_email() else {
-            return ThreadImpact::default();
-        };
-
-        if self.thread_has_multiple_senders(&email.thread_id) {
-            let other_count = self
-                .emails
-                .iter()
-                .filter(|e| e.thread_id == email.thread_id && e.from_email != email.from_email)
-                .count();
-
-            ThreadImpact {
-                warning: Some(ThreadWarning::SenderEmailMode {
-                    thread_count: 1,
-                    email_count: other_count,
-                }),
-            }
-        } else {
-            ThreadImpact::default()
-        }
-    }
-
     /// Removes an email by ID and regroups
     pub fn remove_email(&mut self, email_id: &str) {
         self.emails.retain(|e| e.id != email_id);
@@ -466,6 +430,48 @@ impl App {
         }
     }
 
+    /// Gets all email IDs in the current group
+    pub fn current_group_email_ids(&self) -> Vec<String> {
+        self.current_group()
+            .map(|g| g.emails.iter().map(|e| e.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Gets all email IDs in the current thread
+    pub fn current_thread_email_ids(&self) -> Vec<String> {
+        self.current_thread_emails()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// Calculates the impact of archiving/deleting the currently selected email
+    pub fn current_email_thread_impact(&self) -> ThreadImpact {
+        let Some(email) = self.current_email() else {
+            return ThreadImpact::default();
+        };
+
+        if self.thread_has_multiple_senders(&email.thread_id) {
+            let other_count = self
+                .emails
+                .iter()
+                .filter(|e| e.thread_id == email.thread_id && e.from_email != email.from_email)
+                .count();
+
+            ThreadImpact {
+                warning: Some(ThreadWarning::SenderEmailMode {
+                    thread_count: 1,
+                    email_count: other_count,
+                }),
+            }
+        } else {
+            ThreadImpact::default()
+        }
+    }
+
     /// Removes all emails in threads that contain emails from the current group
     /// This affects ALL emails in those threads, including from other senders
     pub fn remove_current_group_threads(&mut self) {
@@ -478,31 +484,6 @@ impl App {
         if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
             self.selected_group = self.groups.len() - 1;
         }
-    }
-
-    /// Gets all email IDs in the current group
-    pub fn current_group_email_ids(&self) -> Vec<String> {
-        self.current_group()
-            .map(|g| g.emails.iter().map(|e| e.id.clone()).collect())
-            .unwrap_or_default()
-    }
-
-    /// Gets all email IDs in threads that contain emails from the current group
-    pub fn current_group_thread_email_ids(&self) -> Vec<String> {
-        let thread_ids = self.current_group_thread_ids();
-        self.emails
-            .iter()
-            .filter(|e| thread_ids.contains(&e.thread_id))
-            .map(|e| e.id.clone())
-            .collect()
-    }
-
-    /// Gets all email IDs in the current thread
-    pub fn current_thread_email_ids(&self) -> Vec<String> {
-        self.current_thread_emails()
-            .iter()
-            .map(|e| e.id.clone())
-            .collect()
     }
 }
 
