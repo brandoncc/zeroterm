@@ -29,7 +29,7 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &UiState) {
             let widget = EmailListWidget::new(app);
             frame.render_widget(widget, chunks[0]);
         }
-        View::ThreadView => {
+        View::Thread => {
             let widget = ThreadViewWidget::new(app);
             frame.render_widget(widget, chunks[0]);
         }
@@ -47,11 +47,11 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &UiState) {
     }
 
     // Render busy modal if active (takes priority over confirmation)
-    if ui_state.is_busy() {
-        if let Some(msg) = &ui_state.status_message {
-            let modal = BusyModalWidget::new(msg, ui_state.spinner_char());
-            frame.render_widget(modal, frame.area());
-        }
+    if ui_state.is_busy()
+        && let Some(msg) = &ui_state.status_message
+    {
+        let modal = BusyModalWidget::new(msg, ui_state.spinner_char());
+        frame.render_widget(modal, frame.area());
     }
 }
 

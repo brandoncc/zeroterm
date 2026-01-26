@@ -462,7 +462,7 @@ impl Widget for HelpBarWidget<'_> {
             View::EmailList => {
                 "j/↓: next | k/↑: prev | Enter: view thread | a: archive | A: archive all | d: delete | D: delete all | g: toggle | q: back"
             }
-            View::ThreadView => {
+            View::Thread => {
                 "j/↓: next | k/↑: prev | A: archive entire thread | D: delete entire thread | q: back"
             }
         };

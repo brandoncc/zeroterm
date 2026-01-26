@@ -15,7 +15,7 @@ pub enum View {
     #[default]
     GroupList,
     EmailList,
-    ThreadView,
+    Thread,
 }
 
 /// Represents a group of emails from the same sender
@@ -126,7 +126,7 @@ impl App {
             .collect();
 
         // Sort groups by email count (descending) for better UX
-        self.groups.sort_by(|a, b| b.count().cmp(&a.count()));
+        self.groups.sort_by_key(|g| std::cmp::Reverse(g.count()));
 
         // Reset selection if out of bounds
         if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
@@ -151,7 +151,7 @@ impl App {
         match self.view {
             View::GroupList => self.select_next_group(),
             View::EmailList => self.select_next_email(),
-            View::ThreadView => self.select_next_thread_email(),
+            View::Thread => self.select_next_thread_email(),
         }
     }
 
@@ -160,7 +160,7 @@ impl App {
         match self.view {
             View::GroupList => self.select_previous_group(),
             View::EmailList => self.select_previous_email(),
-            View::ThreadView => self.select_previous_thread_email(),
+            View::Thread => self.select_previous_thread_email(),
         }
     }
 
@@ -232,7 +232,7 @@ impl App {
         match self.view {
             View::GroupList => self.enter_group(),
             View::EmailList => self.enter_thread(),
-            View::ThreadView => {} // Already at deepest level
+            View::Thread => {} // Already at deepest level
         }
     }
 
@@ -241,7 +241,7 @@ impl App {
         match self.view {
             View::GroupList => {} // Can't go back, handled by main.rs for quit
             View::EmailList => self.exit_to_groups(),
-            View::ThreadView => self.exit_to_emails(),
+            View::Thread => self.exit_to_emails(),
         }
     }
 
@@ -266,7 +266,7 @@ impl App {
     /// Enters the thread view for the currently selected email
     fn enter_thread(&mut self) {
         if self.current_email().is_some() {
-            self.view = View::ThreadView;
+            self.view = View::Thread;
             self.selected_thread_email = Some(0);
         }
     }
@@ -382,16 +382,15 @@ impl App {
         self.regroup();
 
         // Adjust selected_email if needed
-        if let Some(group) = self.groups.get(self.selected_group) {
-            if let Some(idx) = self.selected_email {
-                if idx >= group.emails.len() {
-                    self.selected_email = if group.emails.is_empty() {
-                        None
-                    } else {
-                        Some(group.emails.len() - 1)
-                    };
-                }
-            }
+        if let Some(group) = self.groups.get(self.selected_group)
+            && let Some(idx) = self.selected_email
+            && idx >= group.emails.len()
+        {
+            self.selected_email = if group.emails.is_empty() {
+                None
+            } else {
+                Some(group.emails.len() - 1)
+            };
         }
     }
 
@@ -401,16 +400,15 @@ impl App {
         self.regroup();
 
         // Adjust selections
-        if let Some(group) = self.groups.get(self.selected_group) {
-            if let Some(idx) = self.selected_email {
-                if idx >= group.emails.len() {
-                    self.selected_email = if group.emails.is_empty() {
-                        None
-                    } else {
-                        Some(group.emails.len() - 1)
-                    };
-                }
-            }
+        if let Some(group) = self.groups.get(self.selected_group)
+            && let Some(idx) = self.selected_email
+            && idx >= group.emails.len()
+        {
+            self.selected_email = if group.emails.is_empty() {
+                None
+            } else {
+                Some(group.emails.len() - 1)
+            };
         }
         self.selected_thread_email = None;
     }
@@ -647,7 +645,7 @@ mod tests {
 
         // Enter thread view
         app.enter();
-        assert_eq!(app.view, View::ThreadView);
+        assert_eq!(app.view, View::Thread);
         assert_eq!(app.selected_thread_email, Some(0));
 
         // Navigate in thread
