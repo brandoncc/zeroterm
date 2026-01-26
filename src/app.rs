@@ -75,6 +75,8 @@ pub struct App {
     pub selected_thread_email: Option<usize>,
     pub view: View,
     emails: Vec<Email>,
+    /// Cache of thread IDs that have multiple senders (for O(1) lookup)
+    multi_sender_threads: HashSet<String>,
 }
 
 impl Default for App {
@@ -93,6 +95,7 @@ impl App {
             selected_thread_email: None,
             view: View::default(),
             emails: Vec::new(),
+            multi_sender_threads: HashSet::new(),
         }
     }
 
@@ -102,8 +105,28 @@ impl App {
         self.regroup();
     }
 
+    /// Rebuilds the cache of thread IDs with multiple senders
+    fn rebuild_multi_sender_cache(&mut self) {
+        // Build a map of thread_id -> set of senders
+        let mut thread_senders: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for email in &self.emails {
+            thread_senders
+                .entry(&email.thread_id)
+                .or_default()
+                .insert(&email.from_email);
+        }
+
+        // Collect thread IDs with more than one sender
+        self.multi_sender_threads = thread_senders
+            .into_iter()
+            .filter(|(_, senders)| senders.len() > 1)
+            .map(|(thread_id, _)| thread_id.to_string())
+            .collect();
+    }
+
     /// Regroups emails according to the current group mode
     fn regroup(&mut self) {
+        self.rebuild_multi_sender_cache();
         let mut group_map: HashMap<String, Vec<Email>> = HashMap::new();
 
         for email in &self.emails {
@@ -320,15 +343,9 @@ impl App {
         thread_emails
     }
 
-    /// Checks if a thread has emails from multiple senders
+    /// Checks if a thread has emails from multiple senders (O(1) lookup using cache)
     pub fn thread_has_multiple_senders(&self, thread_id: &str) -> bool {
-        let senders: HashSet<&str> = self
-            .emails
-            .iter()
-            .filter(|e| e.thread_id == thread_id)
-            .map(|e| e.from_email.as_str())
-            .collect();
-        senders.len() > 1
+        self.multi_sender_threads.contains(thread_id)
     }
 
     /// Checks if any email in a group is part of a multi-sender thread
