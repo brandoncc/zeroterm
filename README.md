@@ -64,7 +64,7 @@ This design ensures you always know exactly what emails will be affected before 
 
 ## Supported Email Providers
 
-- Gmail (via Gmail API)
+- Gmail (via IMAP)
 
 ## Installation
 
@@ -79,33 +79,37 @@ cargo build --release
 # The binary will be at target/release/zeroterm
 ```
 
-## Google Cloud Setup
+## Configuration
 
-Before using Zeroterm, you need to set up OAuth2 credentials:
+Zeroterm connects to Gmail via IMAP using an App Password.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or select an existing one)
-3. Enable the Gmail API:
-   - Navigate to "APIs & Services" > "Library"
-   - Search for "Gmail API" and enable it
-4. Configure the OAuth consent screen:
-   - Go to "APIs & Services" > "OAuth consent screen"
-   - Choose "External" user type
-   - Fill in the required fields (app name, user support email, developer contact)
-   - Add the scope: `https://mail.google.com/`
-   - Add your email as a test user
-5. Create OAuth2 credentials:
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "OAuth client ID"
-   - Choose "Desktop app" as the application type
-   - Download the credentials JSON file
-6. Save the credentials file:
-   ```sh
-   mkdir -p ~/.config/zeroterm
-   mv ~/Downloads/client_secret_*.json ~/.config/zeroterm/client_secret.json
-   ```
+### 1. Create a Gmail App Password
 
-On first run, Zeroterm will open a browser for you to authorize access to your Gmail account.
+1. Go to your [Google Account](https://myaccount.google.com/)
+2. Navigate to Security → 2-Step Verification (must be enabled)
+3. At the bottom, click "App passwords"
+4. Create a new app password for "Mail"
+5. Copy the 16-character password
+
+### 2. Create the credentials file
+
+Create `~/.config/zeroterm/credentials.toml`:
+
+```toml
+email = "you@gmail.com"
+app_password = "xxxx xxxx xxxx xxxx"
+```
+
+### Using 1Password CLI (optional)
+
+If you use 1Password, you can reference secrets instead of storing them in plain text:
+
+```toml
+email = "you@gmail.com"
+app_password = "op://Personal/Gmail App Password/password"
+```
+
+Zeroterm will automatically call `op read` to resolve the secret.
 
 ## Usage
 
