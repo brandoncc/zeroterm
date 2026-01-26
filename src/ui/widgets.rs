@@ -269,7 +269,13 @@ impl Widget for GroupListWidget<'_> {
             GroupMode::BySenderEmail => "email",
             GroupMode::ByDomain => "domain",
         };
-        let title = format!(" Senders (by {}) ", mode_str);
+        let total_emails: usize = self.app.groups.iter().map(|g| g.count()).sum();
+        let title = format!(
+            " Senders (by {}) — {} emails in {} groups ",
+            mode_str,
+            total_emails,
+            self.app.groups.len()
+        );
         let block = Block::default().borders(Borders::ALL).title(title);
 
         let inner = block.inner(area);
@@ -322,7 +328,18 @@ impl Widget for EmailListWidget<'_> {
         let title = self
             .app
             .current_group()
-            .map(|g| format!(" Emails from {} ", g.key))
+            .map(|g| {
+                let email_count = g.count();
+                let thread_count = g.thread_count();
+                if thread_count == email_count {
+                    format!(" Emails from {} — {} emails ", g.key, email_count)
+                } else {
+                    format!(
+                        " Emails from {} — {} emails in {} threads ",
+                        g.key, email_count, thread_count
+                    )
+                }
+            })
             .unwrap_or_else(|| " Emails ".to_string());
 
         let block = Block::default().borders(Borders::ALL).title(title);
@@ -387,10 +404,18 @@ impl<'a> ThreadViewWidget<'a> {
 
 impl Widget for ThreadViewWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let thread_emails = self.app.current_thread_emails();
+        let thread_count = thread_emails.len();
         let title = self
             .app
             .current_email()
-            .map(|e| format!(" Thread: {} ", e.subject))
+            .map(|e| {
+                if thread_count == 1 {
+                    format!(" Thread: {} — 1 email ", e.subject)
+                } else {
+                    format!(" Thread: {} — {} emails ", e.subject, thread_count)
+                }
+            })
             .unwrap_or_else(|| " Thread ".to_string());
 
         let block = Block::default().borders(Borders::ALL).title(title);
@@ -398,8 +423,7 @@ impl Widget for ThreadViewWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Thread emails are already sorted by date descending
-        let thread_emails = self.app.current_thread_emails();
+        // thread_emails already sorted by date descending from above
         let current_sender = self.app.current_email().map(|e| &e.from_email);
 
         let rows: Vec<Row> = thread_emails
