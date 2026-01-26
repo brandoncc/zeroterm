@@ -572,7 +572,7 @@ impl Widget for AccountSelectWidget<'_> {
         block.render(area, buf);
 
         for (i, (name, account)) in self.selection.accounts.iter().enumerate() {
-            if i >= inner.height as usize {
+            if i >= inner.height.saturating_sub(2) as usize {
                 break;
             }
 

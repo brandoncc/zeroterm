@@ -131,7 +131,7 @@ pub fn get_default_account(config: &Config) -> Result<(&String, &AccountConfig)>
     config
         .accounts
         .iter()
-        .next()
+        .min_by_key(|(name, _)| name.as_str())
         .context("No accounts configured")
 }
 
