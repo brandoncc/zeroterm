@@ -187,13 +187,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Keep waiting, but check for quit
-                if event::poll(Duration::from_millis(0))? {
-                    if let Event::Key(key) = event::read()? {
-                        if key.code == KeyCode::Char('q') {
-                            let _ = cmd_tx.send(ImapCommand::Shutdown);
-                            return Ok(());
-                        }
-                    }
+                if event::poll(Duration::from_millis(0))?
+                    && let Event::Key(key) = event::read()?
+                    && key.code == KeyCode::Char('q')
+                {
+                    let _ = cmd_tx.send(ImapCommand::Shutdown);
+                    return Ok(());
                 }
             }
             _ => {}
@@ -222,59 +221,59 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                     }
                     Err(e) => {
                         ui_state.clear_busy();
-                        ui_state.set_status(&format!("Error: {}", e));
+                        ui_state.set_status(format!("Error: {}", e));
                     }
                 },
                 ImapResponse::ArchiveResult(result) => {
-                    if let Some(PendingOp::ArchiveSingle(id)) = pending_operation.take() {
-                        if result.is_ok() {
-                            app.remove_email(&id);
-                        }
+                    if let Some(PendingOp::ArchiveSingle(id)) = pending_operation.take()
+                        && result.is_ok()
+                    {
+                        app.remove_email(&id);
                     }
                     ui_state.clear_busy();
                 }
                 ImapResponse::DeleteResult(result) => {
-                    if let Some(PendingOp::DeleteSingle(id)) = pending_operation.take() {
-                        if result.is_ok() {
-                            app.remove_email(&id);
-                        }
+                    if let Some(PendingOp::DeleteSingle(id)) = pending_operation.take()
+                        && result.is_ok()
+                    {
+                        app.remove_email(&id);
                     }
                     ui_state.clear_busy();
                 }
                 ImapResponse::MultiArchiveResult(result) => {
-                    if let Some(op) = pending_operation.take() {
-                        if result.is_ok() {
-                            match op {
-                                PendingOp::ArchiveGroup => {
-                                    app.remove_current_group_emails();
-                                }
-                                PendingOp::ArchiveThread(thread_id) => {
-                                    app.remove_thread(&thread_id);
-                                    if app.view == View::ThreadView {
-                                        app.exit();
-                                    }
-                                }
-                                _ => {}
+                    if let Some(op) = pending_operation.take()
+                        && result.is_ok()
+                    {
+                        match op {
+                            PendingOp::ArchiveGroup => {
+                                app.remove_current_group_emails();
                             }
+                            PendingOp::ArchiveThread(ref thread_id) => {
+                                app.remove_thread(thread_id);
+                                if app.view == View::Thread {
+                                    app.exit();
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     ui_state.clear_busy();
                 }
                 ImapResponse::MultiDeleteResult(result) => {
-                    if let Some(op) = pending_operation.take() {
-                        if result.is_ok() {
-                            match op {
-                                PendingOp::DeleteGroup => {
-                                    app.remove_current_group_emails();
-                                }
-                                PendingOp::DeleteThread(thread_id) => {
-                                    app.remove_thread(&thread_id);
-                                    if app.view == View::ThreadView {
-                                        app.exit();
-                                    }
-                                }
-                                _ => {}
+                    if let Some(op) = pending_operation.take()
+                        && result.is_ok()
+                    {
+                        match op {
+                            PendingOp::DeleteGroup => {
+                                app.remove_current_group_emails();
                             }
+                            PendingOp::DeleteThread(ref thread_id) => {
+                                app.remove_thread(thread_id);
+                                if app.view == View::Thread {
+                                    app.exit();
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     ui_state.clear_busy();
@@ -284,79 +283,79 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
         }
 
         // Poll for keyboard events with timeout
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
 
-                // Block input when busy (except we still consume events to avoid queue buildup)
-                if ui_state.is_busy() {
-                    continue;
-                }
+            // Block input when busy (except we still consume events to avoid queue buildup)
+            if ui_state.is_busy() {
+                continue;
+            }
 
-                // Handle confirmation dialog input
-                if ui_state.is_confirming() {
-                    match key.code {
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            if let Some(action) = ui_state.confirm_action.take() {
-                                handle_confirmed_action(
-                                    &mut app,
-                                    &cmd_tx,
-                                    &mut ui_state,
-                                    &mut pending_operation,
-                                    action,
-                                )?;
-                            }
-                        }
-                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                            ui_state.clear_confirm();
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-
-                // Normal input handling
+            // Handle confirmation dialog input
+            if ui_state.is_confirming() {
                 match key.code {
-                    KeyCode::Char('q') => {
-                        if app.view == View::GroupList {
-                            let _ = cmd_tx.send(ImapCommand::Shutdown);
-                            break;
-                        } else {
-                            app.exit();
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        if let Some(action) = ui_state.confirm_action.take() {
+                            handle_confirmed_action(
+                                &mut app,
+                                &cmd_tx,
+                                &mut ui_state,
+                                &mut pending_operation,
+                                action,
+                            )?;
                         }
                     }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        app.select_next();
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        app.select_previous();
-                    }
-                    KeyCode::Enter => {
-                        app.enter();
-                    }
-                    KeyCode::Char('g') => {
-                        app.toggle_group_mode();
-                    }
-                    KeyCode::Char('r') => {
-                        ui_state.set_busy("Refreshing...");
-                        cmd_tx.send(ImapCommand::FetchInbox)?;
-                    }
-                    KeyCode::Char('a') => {
-                        handle_archive(&mut app, &cmd_tx, &mut ui_state, &mut pending_operation)?;
-                    }
-                    KeyCode::Char('A') => {
-                        handle_archive_all(&app, &mut ui_state);
-                    }
-                    KeyCode::Char('d') => {
-                        handle_delete(&mut app, &cmd_tx, &mut ui_state, &mut pending_operation)?;
-                    }
-                    KeyCode::Char('D') => {
-                        handle_delete_all(&app, &mut ui_state);
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        ui_state.clear_confirm();
                     }
                     _ => {}
                 }
+                continue;
+            }
+
+            // Normal input handling
+            match key.code {
+                KeyCode::Char('q') => {
+                    if app.view == View::GroupList {
+                        let _ = cmd_tx.send(ImapCommand::Shutdown);
+                        break;
+                    } else {
+                        app.exit();
+                    }
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    app.select_next();
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.select_previous();
+                }
+                KeyCode::Enter => {
+                    app.enter();
+                }
+                KeyCode::Char('g') => {
+                    app.toggle_group_mode();
+                }
+                KeyCode::Char('r') => {
+                    ui_state.set_busy("Refreshing...");
+                    cmd_tx.send(ImapCommand::FetchInbox)?;
+                }
+                KeyCode::Char('a') => {
+                    handle_archive(&mut app, &cmd_tx, &mut ui_state, &mut pending_operation)?;
+                }
+                KeyCode::Char('A') => {
+                    handle_archive_all(&app, &mut ui_state);
+                }
+                KeyCode::Char('d') => {
+                    handle_delete(&mut app, &cmd_tx, &mut ui_state, &mut pending_operation)?;
+                }
+                KeyCode::Char('D') => {
+                    handle_delete_all(&app, &mut ui_state);
+                }
+                _ => {}
             }
         }
     }
@@ -393,9 +392,11 @@ fn handle_archive(
                 cmd_tx.send(ImapCommand::ArchiveEmail(email.id))?;
             }
         }
-        View::ThreadView => {
+        View::Thread => {
             // No lowercase 'a' in thread view - use 'A' to archive entire thread
         }
+        #[allow(unreachable_patterns)]
+        _ => {}
     }
     Ok(())
 }
@@ -413,7 +414,7 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState) {
                 });
             }
         }
-        View::ThreadView => {
+        View::Thread => {
             // In thread view, 'A' also archives the thread
             let thread_count = app.current_thread_emails().len();
             if thread_count > 0 {
@@ -444,9 +445,11 @@ fn handle_delete(
                 cmd_tx.send(ImapCommand::DeleteEmail(email.id))?;
             }
         }
-        View::ThreadView => {
+        View::Thread => {
             // No lowercase 'd' in thread view - use 'D' to delete entire thread
         }
+        #[allow(unreachable_patterns)]
+        _ => {}
     }
     Ok(())
 }
@@ -464,7 +467,7 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState) {
                 });
             }
         }
-        View::ThreadView => {
+        View::Thread => {
             // In thread view, 'D' also deletes the thread
             let thread_count = app.current_thread_emails().len();
             if thread_count > 0 {
@@ -489,7 +492,7 @@ fn handle_confirmed_action(
             // Archive only this sender's emails (not full threads)
             let email_ids = app.current_group_email_ids();
             if !email_ids.is_empty() {
-                ui_state.set_busy(&format!("Archiving {} emails...", email_ids.len()));
+                ui_state.set_busy(format!("Archiving {} emails...", email_ids.len()));
                 *pending_operation = Some(PendingOp::ArchiveGroup);
                 cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
             }
@@ -498,7 +501,7 @@ fn handle_confirmed_action(
             // Delete only this sender's emails (not full threads)
             let email_ids = app.current_group_email_ids();
             if !email_ids.is_empty() {
-                ui_state.set_busy(&format!("Deleting {} emails...", email_ids.len()));
+                ui_state.set_busy(format!("Deleting {} emails...", email_ids.len()));
                 *pending_operation = Some(PendingOp::DeleteGroup);
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
@@ -507,24 +510,24 @@ fn handle_confirmed_action(
             // Archive entire thread
             let email_ids = app.current_thread_email_ids();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
-            if !email_ids.is_empty() {
-                if let Some(tid) = thread_id {
-                    ui_state.set_busy(&format!("Archiving thread ({} emails)...", email_ids.len()));
-                    *pending_operation = Some(PendingOp::ArchiveThread(tid));
-                    cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
-                }
+            if !email_ids.is_empty()
+                && let Some(tid) = thread_id
+            {
+                ui_state.set_busy(format!("Archiving thread ({} emails)...", email_ids.len()));
+                *pending_operation = Some(PendingOp::ArchiveThread(tid));
+                cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
             }
         }
         ConfirmAction::DeleteThread { .. } => {
             // Delete entire thread
             let email_ids = app.current_thread_email_ids();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
-            if !email_ids.is_empty() {
-                if let Some(tid) = thread_id {
-                    ui_state.set_busy(&format!("Deleting thread ({} emails)...", email_ids.len()));
-                    *pending_operation = Some(PendingOp::DeleteThread(tid));
-                    cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
-                }
+            if !email_ids.is_empty()
+                && let Some(tid) = thread_id
+            {
+                ui_state.set_busy(format!("Deleting thread ({} emails)...", email_ids.len()));
+                *pending_operation = Some(PendingOp::DeleteThread(tid));
+                cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
         }
     }

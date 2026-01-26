@@ -23,6 +23,7 @@ pub struct Email {
 
 impl Email {
     /// Creates a new Email with threading headers
+    #[allow(clippy::too_many_arguments)]
     pub fn with_headers(
         id: String,
         from: String,
@@ -59,8 +60,7 @@ pub fn extract_email(from: &str) -> String {
     if let Some(captures) = re.captures(from) {
         captures
             .get(1)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default()
+            .map_or_else(String::new, |m| m.as_str().to_string())
     } else {
         from.trim().to_string()
     }
@@ -94,10 +94,10 @@ pub fn build_thread_ids(emails: &mut [Email]) {
     // Union emails that are connected via In-Reply-To or References
     for (i, email) in emails.iter().enumerate() {
         // Check In-Reply-To
-        if let Some(ref reply_to) = email.in_reply_to {
-            if let Some(&j) = msg_id_to_idx.get(reply_to) {
-                union(&mut parent, i, j);
-            }
+        if let Some(ref reply_to) = email.in_reply_to
+            && let Some(&j) = msg_id_to_idx.get(reply_to)
+        {
+            union(&mut parent, i, j);
         }
 
         // Check all References - this connects emails even when intermediate messages are missing
@@ -109,9 +109,9 @@ pub fn build_thread_ids(emails: &mut [Email]) {
     }
 
     // Assign thread IDs based on root of each component
-    for i in 0..emails.len() {
+    for (i, email) in emails.iter_mut().enumerate() {
         let root = find(&parent, i);
-        emails[i].thread_id = format!("thread_{}", root);
+        email.thread_id = format!("thread_{}", root);
     }
 }
 

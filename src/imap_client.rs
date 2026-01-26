@@ -84,7 +84,7 @@ impl ImapClient {
         // Parse headers for Message-ID, In-Reply-To, and References
         let (message_id, in_reply_to, references) = fetch
             .header()
-            .map(|h| parse_threading_headers(h))
+            .map(parse_threading_headers)
             .unwrap_or((None, None, Vec::new()));
 
         // Create snippet from first part of subject for now
@@ -131,7 +131,7 @@ impl EmailClient for ImapClient {
 
         let mut emails = Vec::new();
         for msg in messages.iter() {
-            if let Some(email) = self.parse_message(&msg) {
+            if let Some(email) = self.parse_message(msg) {
                 emails.push(email);
             }
         }
@@ -175,10 +175,10 @@ fn decode_header_value(value: &[u8]) -> String {
     let value_str = String::from_utf8_lossy(value);
 
     // Handle =?charset?encoding?text?= format
-    if value_str.contains("=?") {
-        if let Ok(decoded) = mailparse::parse_header(format!("X: {}", value_str).as_bytes()) {
-            return decoded.0.get_value();
-        }
+    if value_str.contains("=?")
+        && let Ok(decoded) = mailparse::parse_header(format!("X: {}", value_str).as_bytes())
+    {
+        return decoded.0.get_value();
     }
 
     value_str.to_string()
