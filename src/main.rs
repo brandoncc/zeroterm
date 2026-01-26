@@ -264,6 +264,7 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
             }
         }
 
+        app.ensure_valid_selection();
         terminal.draw(|f| render(f, &app, &mut ui_state))?;
 
         // Poll for keyboard events with timeout
@@ -955,6 +956,7 @@ fn run_app(
 
     // Show connecting status
     ui_state.set_busy(format!("Connecting to {}...", account_name));
+    app.ensure_valid_selection();
     terminal.draw(|f| render(f, &app, &mut ui_state))?;
 
     // Spawn IMAP worker thread
@@ -966,6 +968,7 @@ fn run_app(
         match resp_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(ImapResponse::Connected) => {
                 ui_state.set_busy("Loading emails...");
+                app.ensure_valid_selection();
                 terminal.draw(|f| render(f, &app, &mut ui_state))?;
                 cmd_tx.send(ImapCommand::FetchInbox)?;
                 break;
@@ -999,6 +1002,7 @@ fn run_app(
             ui_state.tick_spinner();
         }
 
+        app.ensure_valid_selection();
         terminal.draw(|f| render(f, &app, &mut ui_state))?;
 
         // Check for IMAP responses (non-blocking)
