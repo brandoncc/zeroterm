@@ -106,6 +106,8 @@ pub struct App {
     pub selected_undo: usize,
     /// View to return to after closing undo history
     previous_view: Option<View>,
+    /// The group key we're currently viewing (to preserve view after deletions)
+    viewing_group_key: Option<String>,
 }
 
 impl Default for App {
@@ -130,6 +132,7 @@ impl App {
             undo_history: Vec::new(),
             selected_undo: 0,
             previous_view: None,
+            viewing_group_key: None,
         }
     }
 
@@ -196,8 +199,14 @@ impl App {
         self.groups
             .sort_by_key(|g| (std::cmp::Reverse(g.count()), g.key.to_lowercase()));
 
-        // Reset selection if out of bounds
-        if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
+        // If we're viewing a specific group, find its new index after sorting
+        if let Some(ref key) = self.viewing_group_key {
+            if let Some(idx) = self.groups.iter().position(|g| &g.key == key) {
+                self.selected_group = idx;
+            }
+            // If group not found, viewing_group_key stays set so UI can show empty state
+        } else if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
+            // Reset selection if out of bounds (only when not viewing a specific group)
             self.selected_group = self.groups.len() - 1;
         }
     }
@@ -476,9 +485,10 @@ impl App {
 
     /// Enters the email list view for the currently selected group
     fn enter_group(&mut self) {
-        if !self.groups.is_empty() {
+        if let Some(group) = self.groups.get(self.selected_group) {
+            self.viewing_group_key = Some(group.key.clone());
             self.view = View::EmailList;
-            self.selected_email = if self.groups[self.selected_group].threads().is_empty() {
+            self.selected_email = if group.threads().is_empty() {
                 None
             } else {
                 Some(0)
@@ -490,6 +500,7 @@ impl App {
     fn exit_to_groups(&mut self) {
         self.view = View::GroupList;
         self.selected_email = None;
+        self.viewing_group_key = None;
     }
 
     /// Enters the thread view for the currently selected email
@@ -509,6 +520,11 @@ impl App {
     /// Gets the currently selected group, if any
     pub fn current_group(&self) -> Option<&EmailGroup> {
         self.groups.get(self.selected_group)
+    }
+
+    /// Gets the key of the group we're currently viewing (may be empty/deleted)
+    pub fn viewing_group_key(&self) -> Option<&str> {
+        self.viewing_group_key.as_deref()
     }
 
     /// Gets the currently selected email, if any.
