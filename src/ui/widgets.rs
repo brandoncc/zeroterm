@@ -194,6 +194,11 @@ impl UiState {
         self.spinner_frame = 0;
     }
 
+    /// Update the busy message without resetting the spinner
+    pub fn update_busy_message(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+    }
+
     /// Clear busy state
     pub fn clear_busy(&mut self) {
         self.busy = false;
