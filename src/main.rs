@@ -420,7 +420,9 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     app.select_last();
                 }
                 KeyCode::Char('m') => {
-                    app.toggle_group_mode();
+                    if app.view == View::GroupList {
+                        app.toggle_group_mode();
+                    }
                 }
                 KeyCode::Char('r') => {
                     ui_state.set_status("Demo mode: refresh simulated".to_string());
@@ -1288,7 +1290,9 @@ fn run_app(
                     app.select_last();
                 }
                 KeyCode::Char('m') => {
-                    app.toggle_group_mode();
+                    if app.view == View::GroupList {
+                        app.toggle_group_mode();
+                    }
                 }
                 KeyCode::Char('r') => {
                     ui_state.set_busy("Refreshing...");
