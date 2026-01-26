@@ -233,10 +233,10 @@ impl App {
                 }
             }
             View::EmailList => {
-                if let Some(group) = self.current_group() {
-                    if !group.emails.is_empty() {
-                        self.selected_email = Some(group.emails.len() - 1);
-                    }
+                if let Some(group) = self.current_group()
+                    && !group.emails.is_empty()
+                {
+                    self.selected_email = Some(group.emails.len() - 1);
                 }
             }
             View::Thread => {
