@@ -152,8 +152,9 @@ impl App {
             })
             .collect();
 
-        // Sort groups by email count (descending) for better UX
-        self.groups.sort_by_key(|g| std::cmp::Reverse(g.count()));
+        // Sort groups by email count (descending), then alphabetically (ascending) as tie-breaker
+        self.groups
+            .sort_by_key(|g| (std::cmp::Reverse(g.count()), g.key.to_lowercase()));
 
         // Reset selection if out of bounds
         if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
@@ -995,6 +996,22 @@ mod tests {
 
         assert_eq!(app.groups[0].count(), 3); // alice
         assert_eq!(app.groups[1].count(), 1); // bob
+    }
+
+    #[test]
+    fn test_groups_sorted_alphabetically_when_count_equal() {
+        let mut app = App::new();
+        // Create groups with equal counts, in non-alphabetical order
+        app.set_emails(vec![
+            create_test_email("1", "zara@example.com"),
+            create_test_email("2", "bob@example.com"),
+            create_test_email("3", "Alice@example.com"), // uppercase to test case-insensitivity
+        ]);
+
+        // All have count 1, should be sorted alphabetically (case-insensitive)
+        assert_eq!(app.groups[0].key, "Alice@example.com");
+        assert_eq!(app.groups[1].key, "bob@example.com");
+        assert_eq!(app.groups[2].key, "zara@example.com");
     }
 
     #[test]
