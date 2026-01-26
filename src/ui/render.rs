@@ -7,7 +7,7 @@ use ratatui::{
 use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
-    GroupListWidget, HelpBarWidget, StatusModalWidget, ThreadViewWidget, UiState,
+    GroupListWidget, HelpBarWidget, InboxZeroWidget, StatusModalWidget, ThreadViewWidget, UiState,
     UndoHistoryWidget,
 };
 
@@ -28,21 +28,28 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
     // Render main content based on view
     match app.view {
         View::GroupList => {
-            ui_state.viewport_heights.group_list = inner_height;
+            // Check if inbox is empty - show celebration screen!
+            if app.groups.is_empty() {
+                ui_state.tick_celebration();
+                let widget = InboxZeroWidget::new(ui_state.celebration_frame);
+                frame.render_widget(widget, chunks[0]);
+            } else {
+                ui_state.viewport_heights.group_list = inner_height;
 
-            // Calculate scroll offset to keep selection visible
-            let selected = app.selected_group;
-            let height = inner_height;
-            let offset = &mut ui_state.group_scroll_offset;
+                // Calculate scroll offset to keep selection visible
+                let selected = app.selected_group;
+                let height = inner_height;
+                let offset = &mut ui_state.group_scroll_offset;
 
-            if selected < *offset {
-                *offset = selected;
-            } else if selected >= *offset + height {
-                *offset = selected.saturating_sub(height) + 1;
+                if selected < *offset {
+                    *offset = selected;
+                } else if selected >= *offset + height {
+                    *offset = selected.saturating_sub(height) + 1;
+                }
+
+                let widget = GroupListWidget::new(app, *offset);
+                frame.render_widget(widget, chunks[0]);
             }
-
-            let widget = GroupListWidget::new(app, *offset);
-            frame.render_widget(widget, chunks[0]);
         }
         View::EmailList => {
             ui_state.viewport_heights.email_list = inner_height;
