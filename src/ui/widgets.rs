@@ -515,13 +515,13 @@ impl Widget for HelpBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let help_text = match self.app.view {
             View::GroupList => {
-                "j/↓: next | k/↑: prev | ^d/^u: half page | Enter: open | A: archive all | D: delete all | g: toggle mode | r: refresh | q: quit"
+                "j/↓: next | k/↑: prev | Enter: open | A: archive all | D: delete all | m: toggle mode | r: refresh | q: quit"
             }
             View::EmailList => {
-                "j/↓: next | k/↑: prev | ^d/^u: half page | Enter: thread | a/A: archive | d/D: delete | g: toggle | q: back"
+                "j/↓: next | k/↑: prev | Enter: thread | a/A: archive | d/D: delete | m: toggle | q: back"
             }
             View::Thread => {
-                "j/↓: next | k/↑: prev | ^d/^u: half page | Enter: browser | A: archive | D: delete | q: back"
+                "j/↓: next | k/↑: prev | Enter: browser | A: archive | D: delete | q: back"
             }
         };
 

@@ -201,6 +201,53 @@ impl App {
         }
     }
 
+    /// Selects the first item in the current view
+    pub fn select_first(&mut self) {
+        match self.view {
+            View::GroupList => {
+                self.selected_group = 0;
+            }
+            View::EmailList => {
+                if self
+                    .current_group()
+                    .map(|g| !g.emails.is_empty())
+                    .unwrap_or(false)
+                {
+                    self.selected_email = Some(0);
+                }
+            }
+            View::Thread => {
+                if !self.current_thread_emails().is_empty() {
+                    self.selected_thread_email = Some(0);
+                }
+            }
+        }
+    }
+
+    /// Selects the last item in the current view
+    pub fn select_last(&mut self) {
+        match self.view {
+            View::GroupList => {
+                if !self.groups.is_empty() {
+                    self.selected_group = self.groups.len() - 1;
+                }
+            }
+            View::EmailList => {
+                if let Some(group) = self.current_group() {
+                    if !group.emails.is_empty() {
+                        self.selected_email = Some(group.emails.len() - 1);
+                    }
+                }
+            }
+            View::Thread => {
+                let thread_emails = self.current_thread_emails();
+                if !thread_emails.is_empty() {
+                    self.selected_thread_email = Some(thread_emails.len() - 1);
+                }
+            }
+        }
+    }
+
     /// Selects the next group in the list
     fn select_next_group(&mut self) {
         if !self.groups.is_empty() && self.selected_group < self.groups.len() - 1 {
@@ -672,6 +719,71 @@ mod tests {
 
         app.select_previous();
         assert_eq!(app.selected_email, Some(1));
+    }
+
+    #[test]
+    fn test_select_first_and_last_groups() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "a@test.com"),
+            create_test_email("2", "b@test.com"),
+            create_test_email("3", "c@test.com"),
+        ]);
+
+        assert_eq!(app.selected_group, 0);
+
+        app.select_last();
+        assert_eq!(app.selected_group, 2);
+
+        app.select_first();
+        assert_eq!(app.selected_group, 0);
+    }
+
+    #[test]
+    fn test_select_first_and_last_emails() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+            create_test_email("3", "alice@example.com"),
+        ]);
+
+        app.enter();
+        assert_eq!(app.selected_email, Some(0));
+
+        app.select_last();
+        assert_eq!(app.selected_email, Some(2));
+
+        app.select_first();
+        assert_eq!(app.selected_email, Some(0));
+    }
+
+    #[test]
+    fn test_select_first_and_last_thread() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            create_test_email_with_thread("3", "thread_a", "charlie@example.com"),
+        ]);
+
+        // Navigate to thread view
+        let alice_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "alice@example.com")
+            .unwrap();
+        app.selected_group = alice_idx;
+        app.enter(); // Enter email list
+        app.enter(); // Enter thread view
+
+        assert_eq!(app.selected_thread_email, Some(0));
+
+        app.select_last();
+        assert_eq!(app.selected_thread_email, Some(2));
+
+        app.select_first();
+        assert_eq!(app.selected_thread_email, Some(0));
     }
 
     #[test]
