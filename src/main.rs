@@ -587,14 +587,14 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) 
             // No 'A' in group list view to prevent accidental bulk operations
         }
         View::EmailList => {
-            if protect_threads {
-                ui_state.set_status(format!(
-                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
-                    WARNING_CHAR
-                ));
-                return;
-            }
             if let Some(group) = app.current_group() {
+                if protect_threads && app.group_has_multi_message_threads(group) {
+                    ui_state.set_status(format!(
+                        "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
+                        WARNING_CHAR
+                    ));
+                    return;
+                }
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: group.count(),
@@ -659,14 +659,14 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
             // No 'D' in group list view to prevent accidental bulk operations
         }
         View::EmailList => {
-            if protect_threads {
-                ui_state.set_status(format!(
-                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
-                    WARNING_CHAR
-                ));
-                return;
-            }
             if let Some(group) = app.current_group() {
+                if protect_threads && app.group_has_multi_message_threads(group) {
+                    ui_state.set_status(format!(
+                        "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
+                        WARNING_CHAR
+                    ));
+                    return;
+                }
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: group.count(),
