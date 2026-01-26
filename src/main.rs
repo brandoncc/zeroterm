@@ -225,6 +225,7 @@ fn run_app(
     account: (String, AccountConfig),
 ) -> Result<()> {
     let (account_name, account_config) = account;
+    let user_email = account_config.email.clone();
     let mut app = App::new();
     let mut ui_state = UiState::new();
 
@@ -421,7 +422,7 @@ fn run_app(
                         // Open email in browser for security (avoids terminal escape attacks)
                         if let Some(email) = app.current_thread_email() {
                             if let Some(ref message_id) = email.message_id {
-                                if let Err(e) = open_email_in_browser(message_id) {
+                                if let Err(e) = open_email_in_browser(message_id, &user_email) {
                                     ui_state.set_status(format!("Failed to open browser: {}", e));
                                 }
                             } else {
@@ -596,13 +597,14 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState) {
 /// Uses the rfc822msgid: search operator to find the specific email.
 /// This is the safest approach as it avoids rendering potentially
 /// malicious content (unicode exploits, terminal escape sequences) directly in the terminal.
-fn open_email_in_browser(message_id: &str) -> Result<()> {
+fn open_email_in_browser(message_id: &str, user_email: &str) -> Result<()> {
     // URL-encode the message ID for safe inclusion in URL
     // Message-IDs typically look like <unique-id@domain.com>
     let encoded = urlencoding::encode(message_id);
+    // Use the user's email in the URL path so Gmail opens the correct account
     let url = format!(
-        "https://mail.google.com/mail/u/0/#search/rfc822msgid:{}",
-        encoded
+        "https://mail.google.com/mail/u/{}/#search/rfc822msgid:{}",
+        user_email, encoded
     );
 
     // Use platform-specific command to open URL in default browser
