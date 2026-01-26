@@ -367,18 +367,18 @@ impl StatefulWidget for EmailListWidget<'_> {
             .app
             .current_group()
             .map(|g| {
-                let email_count = g.count();
+                let email_count = self.app.total_thread_emails_for_group(g);
                 let thread_count = g.thread_count();
                 if thread_count == email_count {
-                    format!(" Emails from {} — {} emails ", g.key, email_count)
+                    format!(" Threads from {} — {} threads ", g.key, thread_count)
                 } else {
                     format!(
-                        " Emails from {} — {} emails in {} threads ",
-                        g.key, email_count, thread_count
+                        " Threads from {} — {} threads ({} emails) ",
+                        g.key, thread_count, email_count
                     )
                 }
             })
-            .unwrap_or_else(|| " Emails ".to_string());
+            .unwrap_or_else(|| " Threads ".to_string());
 
         let block = Block::default().borders(Borders::ALL).title(title);
 
@@ -386,9 +386,9 @@ impl StatefulWidget for EmailListWidget<'_> {
         block.render(area, buf);
 
         if let Some(group) = self.app.current_group() {
-            // Emails are already sorted by date descending in the group
+            // Display one row per thread (newest email in each thread)
             let rows: Vec<Row> = group
-                .emails
+                .threads()
                 .iter()
                 .map(|email| {
                     let has_other_senders = self.app.thread_has_multiple_senders(&email.thread_id);

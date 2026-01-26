@@ -39,11 +39,17 @@ impl EmailGroup {
 
     /// Returns the number of unique threads in this group
     pub fn thread_count(&self) -> usize {
+        self.threads().len()
+    }
+
+    /// Returns the newest email from each thread in this group.
+    /// Since emails are sorted by date descending, we take the first email for each thread_id.
+    pub fn threads(&self) -> Vec<&Email> {
+        let mut seen_threads = HashSet::new();
         self.emails
             .iter()
-            .map(|e| &e.thread_id)
-            .collect::<HashSet<_>>()
-            .len()
+            .filter(|email| seen_threads.insert(&email.thread_id))
+            .collect()
     }
 }
 
@@ -226,7 +232,7 @@ impl App {
             View::EmailList => {
                 if self
                     .current_group()
-                    .map(|g| !g.emails.is_empty())
+                    .map(|g| !g.threads().is_empty())
                     .unwrap_or(false)
                 {
                     self.selected_email = Some(0);
@@ -249,10 +255,11 @@ impl App {
                 }
             }
             View::EmailList => {
-                if let Some(group) = self.current_group()
-                    && !group.emails.is_empty()
-                {
-                    self.selected_email = Some(group.emails.len() - 1);
+                if let Some(group) = self.current_group() {
+                    let threads = group.threads();
+                    if !threads.is_empty() {
+                        self.selected_email = Some(threads.len() - 1);
+                    }
                 }
             }
             View::Thread => {
@@ -278,15 +285,16 @@ impl App {
         }
     }
 
-    /// Selects the next email in the current group
+    /// Selects the next thread in the current group
     fn select_next_email(&mut self) {
         if let Some(group) = self.groups.get(self.selected_group) {
-            if group.emails.is_empty() {
+            let threads = group.threads();
+            if threads.is_empty() {
                 return;
             }
 
             self.selected_email = match self.selected_email {
-                Some(idx) if idx < group.emails.len() - 1 => Some(idx + 1),
+                Some(idx) if idx < threads.len() - 1 => Some(idx + 1),
                 Some(idx) => Some(idx),
                 None => Some(0),
             };
@@ -349,7 +357,7 @@ impl App {
     fn enter_group(&mut self) {
         if !self.groups.is_empty() {
             self.view = View::EmailList;
-            self.selected_email = if self.groups[self.selected_group].emails.is_empty() {
+            self.selected_email = if self.groups[self.selected_group].threads().is_empty() {
                 None
             } else {
                 Some(0)
@@ -382,10 +390,13 @@ impl App {
         self.groups.get(self.selected_group)
     }
 
-    /// Gets the currently selected email, if any
+    /// Gets the currently selected email, if any.
+    /// In email list view, this returns the newest email of the selected thread.
     pub fn current_email(&self) -> Option<&Email> {
-        self.current_group()
-            .and_then(|g| self.selected_email.and_then(|idx| g.emails.get(idx)))
+        self.current_group().and_then(|g| {
+            self.selected_email
+                .and_then(|idx| g.threads().get(idx).copied())
+        })
     }
 
     /// Gets all emails in the thread of the currently selected email
@@ -424,6 +435,16 @@ impl App {
         self.current_group()
             .map(|g| g.emails.iter().map(|e| e.thread_id.clone()).collect())
             .unwrap_or_default()
+    }
+
+    /// Counts all emails across all threads that a group participates in
+    /// (includes emails from other senders in multi-sender threads)
+    pub fn total_thread_emails_for_group(&self, group: &EmailGroup) -> usize {
+        let thread_ids: HashSet<&str> = group.emails.iter().map(|e| e.thread_id.as_str()).collect();
+        self.emails
+            .iter()
+            .filter(|e| thread_ids.contains(e.thread_id.as_str()))
+            .count()
     }
 
     /// Calculates the impact of archiving/deleting all emails in the current group
@@ -483,16 +504,18 @@ impl App {
         self.emails.retain(|e| e.id != email_id);
         self.regroup();
 
-        // Adjust selected_email if needed
+        // Adjust selected_email if needed (based on thread count)
         if let Some(group) = self.groups.get(self.selected_group)
             && let Some(idx) = self.selected_email
-            && idx >= group.emails.len()
         {
-            self.selected_email = if group.emails.is_empty() {
-                None
-            } else {
-                Some(group.emails.len() - 1)
-            };
+            let threads = group.threads();
+            if idx >= threads.len() {
+                self.selected_email = if threads.is_empty() {
+                    None
+                } else {
+                    Some(threads.len() - 1)
+                };
+            }
         }
     }
 
@@ -501,16 +524,18 @@ impl App {
         self.emails.retain(|e| e.thread_id != thread_id);
         self.regroup();
 
-        // Adjust selections
+        // Adjust selections (based on thread count)
         if let Some(group) = self.groups.get(self.selected_group)
             && let Some(idx) = self.selected_email
-            && idx >= group.emails.len()
         {
-            self.selected_email = if group.emails.is_empty() {
-                None
-            } else {
-                Some(group.emails.len() - 1)
-            };
+            let threads = group.threads();
+            if idx >= threads.len() {
+                self.selected_email = if threads.is_empty() {
+                    None
+                } else {
+                    Some(threads.len() - 1)
+                };
+            }
         }
         self.selected_thread_email = None;
     }
