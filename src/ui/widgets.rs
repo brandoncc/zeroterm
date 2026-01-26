@@ -163,10 +163,6 @@ impl UiState {
         self.status_message = Some(msg.into());
     }
 
-    pub fn clear_status(&mut self) {
-        self.status_message = None;
-    }
-
     /// Set busy state with a status message (blocks input)
     pub fn set_busy(&mut self, msg: impl Into<String>) {
         self.busy = true;
@@ -517,6 +513,13 @@ impl Widget for ConfirmDialogWidget<'_> {
                 inner.width,
             );
         }
+    }
+}
+
+#[cfg(test)]
+impl UiState {
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
     }
 }
 
