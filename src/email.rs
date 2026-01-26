@@ -21,34 +21,80 @@ pub struct Email {
     pub references: Vec<String>,
 }
 
-impl Email {
-    /// Creates a new Email with threading headers
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_headers(
-        id: String,
-        from: String,
-        subject: String,
-        snippet: String,
-        date: DateTime<Utc>,
-        message_id: Option<String>,
-        in_reply_to: Option<String>,
-        references: Vec<String>,
-    ) -> Self {
-        let from_email = extract_email(&from);
+/// Builder for creating Email instances
+#[derive(Default)]
+pub struct EmailBuilder {
+    id: String,
+    from: String,
+    subject: String,
+    snippet: String,
+    date: Option<DateTime<Utc>>,
+    message_id: Option<String>,
+    in_reply_to: Option<String>,
+    references: Vec<String>,
+}
+
+impl EmailBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
+    }
+
+    pub fn from(mut self, from: impl Into<String>) -> Self {
+        self.from = from.into();
+        self
+    }
+
+    pub fn subject(mut self, subject: impl Into<String>) -> Self {
+        self.subject = subject.into();
+        self
+    }
+
+    pub fn snippet(mut self, snippet: impl Into<String>) -> Self {
+        self.snippet = snippet.into();
+        self
+    }
+
+    pub fn date(mut self, date: DateTime<Utc>) -> Self {
+        self.date = Some(date);
+        self
+    }
+
+    pub fn message_id(mut self, message_id: impl Into<String>) -> Self {
+        self.message_id = Some(message_id.into());
+        self
+    }
+
+    pub fn in_reply_to(mut self, in_reply_to: impl Into<String>) -> Self {
+        self.in_reply_to = Some(in_reply_to.into());
+        self
+    }
+
+    pub fn references(mut self, references: Vec<String>) -> Self {
+        self.references = references;
+        self
+    }
+
+    pub fn build(self) -> Email {
+        let from_email = extract_email(&self.from);
         let from_domain = extract_domain(&from_email);
 
-        Self {
-            id,
+        Email {
+            id: self.id,
             thread_id: String::new(), // Will be set by build_thread_ids
-            from,
+            from: self.from,
             from_email,
             from_domain,
-            subject,
-            snippet,
-            date,
-            message_id,
-            in_reply_to,
-            references,
+            subject: self.subject,
+            snippet: self.snippet,
+            date: self.date.unwrap_or_else(Utc::now),
+            message_id: self.message_id,
+            in_reply_to: self.in_reply_to,
+            references: self.references,
         }
     }
 }
@@ -258,16 +304,16 @@ mod tests {
     #[test]
     fn test_build_thread_ids_single_email() {
         let date = Utc::now();
-        let mut emails = vec![Email::with_headers(
-            "1".to_string(),
-            "alice@example.com".to_string(),
-            "Subject".to_string(),
-            "Snippet".to_string(),
-            date,
-            Some("<msg1@example.com>".to_string()),
-            None,
-            Vec::new(),
-        )];
+        let mut emails = vec![
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Subject")
+                .snippet("Snippet")
+                .date(date)
+                .message_id("<msg1@example.com>")
+                .build(),
+        ];
 
         build_thread_ids(&mut emails);
         assert_eq!(emails[0].thread_id, "thread_0");
@@ -277,26 +323,23 @@ mod tests {
     fn test_build_thread_ids_reply_chain() {
         let date = Utc::now();
         let mut emails = vec![
-            Email::with_headers(
-                "1".to_string(),
-                "alice@example.com".to_string(),
-                "Subject".to_string(),
-                "Original".to_string(),
-                date,
-                Some("<msg1@example.com>".to_string()),
-                None,
-                Vec::new(),
-            ),
-            Email::with_headers(
-                "2".to_string(),
-                "bob@example.com".to_string(),
-                "Re: Subject".to_string(),
-                "Reply".to_string(),
-                date,
-                Some("<msg2@example.com>".to_string()),
-                Some("<msg1@example.com>".to_string()),
-                Vec::new(),
-            ),
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Subject")
+                .snippet("Original")
+                .date(date)
+                .message_id("<msg1@example.com>")
+                .build(),
+            EmailBuilder::new()
+                .id("2")
+                .from("bob@example.com")
+                .subject("Re: Subject")
+                .snippet("Reply")
+                .date(date)
+                .message_id("<msg2@example.com>")
+                .in_reply_to("<msg1@example.com>")
+                .build(),
         ];
 
         build_thread_ids(&mut emails);
@@ -308,26 +351,22 @@ mod tests {
     fn test_build_thread_ids_separate_threads() {
         let date = Utc::now();
         let mut emails = vec![
-            Email::with_headers(
-                "1".to_string(),
-                "alice@example.com".to_string(),
-                "Subject A".to_string(),
-                "Email A".to_string(),
-                date,
-                Some("<msg1@example.com>".to_string()),
-                None,
-                Vec::new(),
-            ),
-            Email::with_headers(
-                "2".to_string(),
-                "bob@example.com".to_string(),
-                "Subject B".to_string(),
-                "Email B".to_string(),
-                date,
-                Some("<msg2@example.com>".to_string()),
-                None,
-                Vec::new(),
-            ),
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Subject A")
+                .snippet("Email A")
+                .date(date)
+                .message_id("<msg1@example.com>")
+                .build(),
+            EmailBuilder::new()
+                .id("2")
+                .from("bob@example.com")
+                .subject("Subject B")
+                .snippet("Email B")
+                .date(date)
+                .message_id("<msg2@example.com>")
+                .build(),
         ];
 
         build_thread_ids(&mut emails);
@@ -339,36 +378,32 @@ mod tests {
     fn test_build_thread_ids_three_email_chain() {
         let date = Utc::now();
         let mut emails = vec![
-            Email::with_headers(
-                "1".to_string(),
-                "alice@example.com".to_string(),
-                "Subject".to_string(),
-                "Original".to_string(),
-                date,
-                Some("<msg1@example.com>".to_string()),
-                None,
-                Vec::new(),
-            ),
-            Email::with_headers(
-                "2".to_string(),
-                "bob@example.com".to_string(),
-                "Re: Subject".to_string(),
-                "Reply 1".to_string(),
-                date,
-                Some("<msg2@example.com>".to_string()),
-                Some("<msg1@example.com>".to_string()),
-                Vec::new(),
-            ),
-            Email::with_headers(
-                "3".to_string(),
-                "alice@example.com".to_string(),
-                "Re: Subject".to_string(),
-                "Reply 2".to_string(),
-                date,
-                Some("<msg3@example.com>".to_string()),
-                Some("<msg2@example.com>".to_string()),
-                Vec::new(),
-            ),
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Subject")
+                .snippet("Original")
+                .date(date)
+                .message_id("<msg1@example.com>")
+                .build(),
+            EmailBuilder::new()
+                .id("2")
+                .from("bob@example.com")
+                .subject("Re: Subject")
+                .snippet("Reply 1")
+                .date(date)
+                .message_id("<msg2@example.com>")
+                .in_reply_to("<msg1@example.com>")
+                .build(),
+            EmailBuilder::new()
+                .id("3")
+                .from("alice@example.com")
+                .subject("Re: Subject")
+                .snippet("Reply 2")
+                .date(date)
+                .message_id("<msg3@example.com>")
+                .in_reply_to("<msg2@example.com>")
+                .build(),
         ];
 
         build_thread_ids(&mut emails);
@@ -383,31 +418,29 @@ mod tests {
         let date = Utc::now();
         let mut emails = vec![
             // Original email
-            Email::with_headers(
-                "1".to_string(),
-                "alice@example.com".to_string(),
-                "Subject".to_string(),
-                "Original".to_string(),
-                date,
-                Some("<msg1@example.com>".to_string()),
-                None,
-                Vec::new(),
-            ),
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Subject")
+                .snippet("Original")
+                .date(date)
+                .message_id("<msg1@example.com>")
+                .build(),
             // Reply 3 - intermediate reply (msg2) is missing from inbox
             // But References header contains the full chain
-            Email::with_headers(
-                "3".to_string(),
-                "charlie@example.com".to_string(),
-                "Re: Subject".to_string(),
-                "Reply to missing email".to_string(),
-                date,
-                Some("<msg3@example.com>".to_string()),
-                Some("<msg2@example.com>".to_string()), // This won't match (msg2 not in inbox)
-                vec![
+            EmailBuilder::new()
+                .id("3")
+                .from("charlie@example.com")
+                .subject("Re: Subject")
+                .snippet("Reply to missing email")
+                .date(date)
+                .message_id("<msg3@example.com>")
+                .in_reply_to("<msg2@example.com>") // This won't match (msg2 not in inbox)
+                .references(vec![
                     "<msg1@example.com>".to_string(),
                     "<msg2@example.com>".to_string(),
-                ],
-            ),
+                ])
+                .build(),
         ];
 
         build_thread_ids(&mut emails);

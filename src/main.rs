@@ -154,6 +154,9 @@ fn spawn_imap_worker(cmd_rx: mpsc::Receiver<ImapCommand>, resp_tx: mpsc::Sender<
                 }
             }
         }
+
+        // Properly close the IMAP session
+        let _ = client.logout();
     });
 }
 
@@ -395,8 +398,6 @@ fn handle_archive(
         View::Thread => {
             // No lowercase 'a' in thread view - use 'A' to archive entire thread
         }
-        #[allow(unreachable_patterns)]
-        _ => {}
     }
     Ok(())
 }
@@ -448,8 +449,6 @@ fn handle_delete(
         View::Thread => {
             // No lowercase 'd' in thread view - use 'D' to delete entire thread
         }
-        #[allow(unreachable_patterns)]
-        _ => {}
     }
     Ok(())
 }
