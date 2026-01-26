@@ -404,6 +404,10 @@ fn run_app(
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         if let Some(action) = ui_state.confirm_action.take() {
+                            if matches!(action, ConfirmAction::Quit) {
+                                let _ = cmd_tx.send(ImapCommand::Shutdown);
+                                break;
+                            }
                             handle_confirmed_action(
                                 &mut app,
                                 &cmd_tx,
@@ -437,8 +441,7 @@ fn run_app(
             match key.code {
                 KeyCode::Char('q') => {
                     if app.view == View::GroupList {
-                        let _ = cmd_tx.send(ImapCommand::Shutdown);
-                        break;
+                        ui_state.set_confirm(ConfirmAction::Quit);
                     } else {
                         app.exit();
                     }
@@ -769,6 +772,10 @@ fn handle_confirmed_action(
                 *pending_operation = Some(PendingOp::DeleteThread(tid));
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
+        }
+        ConfirmAction::Quit => {
+            // Handled before calling this function
+            unreachable!()
         }
     }
     Ok(())

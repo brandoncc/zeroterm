@@ -39,6 +39,8 @@ pub enum ConfirmAction {
     ArchiveThread { thread_email_count: usize },
     /// Delete entire thread (all emails including other senders)
     DeleteThread { thread_email_count: usize },
+    /// Quit the application
+    Quit,
 }
 
 impl ConfirmAction {
@@ -67,6 +69,9 @@ impl ConfirmAction {
                     format!("Delete entire thread ({} email(s))?", thread_email_count),
                     "(y/n)".to_string(),
                 ]
+            }
+            ConfirmAction::Quit => {
+                vec!["Quit zeroterm?".to_string(), "(y/n)".to_string()]
             }
         }
     }
@@ -757,6 +762,14 @@ mod tests {
         let lines = action.message();
         assert!(lines[0].contains("Delete entire thread"));
         assert!(lines[0].contains("3 email(s)"));
+    }
+
+    #[test]
+    fn test_confirm_action_quit() {
+        let action = ConfirmAction::Quit;
+        let lines = action.message();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Quit"));
     }
 
     #[test]
