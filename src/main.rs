@@ -385,9 +385,93 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
+            // Handle search mode input
+            if ui_state.is_searching() {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Restore original selection and exit
+                        if let Some(orig) = ui_state.search_original_selection() {
+                            app.restore_selection(
+                                orig.selected_group,
+                                orig.selected_email,
+                                orig.selected_thread_email,
+                                orig.selected_undo,
+                            );
+                        }
+                        ui_state.exit_search_mode();
+                    }
+                    KeyCode::Enter => {
+                        // Just exit search mode, keep current selection
+                        ui_state.exit_search_mode();
+                    }
+                    KeyCode::Backspace => {
+                        ui_state.backspace_search();
+                        // Re-search with updated query
+                        let query = ui_state.search_query().to_string();
+                        if query.is_empty() {
+                            // Restore original selection when query becomes empty
+                            if let Some(orig) = ui_state.search_original_selection() {
+                                app.restore_selection(
+                                    orig.selected_group,
+                                    orig.selected_email,
+                                    orig.selected_thread_email,
+                                    orig.selected_undo,
+                                );
+                            }
+                        } else if !app.search_first(&query) {
+                            // No match, restore original selection
+                            if let Some(orig) = ui_state.search_original_selection() {
+                                app.restore_selection(
+                                    orig.selected_group,
+                                    orig.selected_email,
+                                    orig.selected_thread_email,
+                                    orig.selected_undo,
+                                );
+                            }
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        ui_state.append_search_char(c);
+                        // Incremental search - find first match
+                        let query = ui_state.search_query().to_string();
+                        if !app.search_first(&query) {
+                            // No match, restore original selection
+                            if let Some(orig) = ui_state.search_original_selection() {
+                                app.restore_selection(
+                                    orig.selected_group,
+                                    orig.selected_email,
+                                    orig.selected_thread_email,
+                                    orig.selected_undo,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // Toggle help menu with ?
             if key.code == KeyCode::Char('?') {
                 ui_state.show_help();
+                continue;
+            }
+
+            // Enter search mode with /
+            if key.code == KeyCode::Char('/') {
+                ui_state.enter_search_mode(&app);
+                continue;
+            }
+
+            // Search next/previous with n/N
+            if key.code == KeyCode::Char('n') && !ui_state.search_query().is_empty() {
+                let query = ui_state.search_query().to_string();
+                app.search_next(&query);
+                continue;
+            }
+            if key.code == KeyCode::Char('N') && !ui_state.search_query().is_empty() {
+                let query = ui_state.search_query().to_string();
+                app.search_previous(&query);
                 continue;
             }
 
@@ -1369,9 +1453,93 @@ fn run_app(
                 continue;
             }
 
+            // Handle search mode input
+            if ui_state.is_searching() {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Restore original selection and exit
+                        if let Some(orig) = ui_state.search_original_selection() {
+                            app.restore_selection(
+                                orig.selected_group,
+                                orig.selected_email,
+                                orig.selected_thread_email,
+                                orig.selected_undo,
+                            );
+                        }
+                        ui_state.exit_search_mode();
+                    }
+                    KeyCode::Enter => {
+                        // Just exit search mode, keep current selection
+                        ui_state.exit_search_mode();
+                    }
+                    KeyCode::Backspace => {
+                        ui_state.backspace_search();
+                        // Re-search with updated query
+                        let query = ui_state.search_query().to_string();
+                        if query.is_empty() {
+                            // Restore original selection when query becomes empty
+                            if let Some(orig) = ui_state.search_original_selection() {
+                                app.restore_selection(
+                                    orig.selected_group,
+                                    orig.selected_email,
+                                    orig.selected_thread_email,
+                                    orig.selected_undo,
+                                );
+                            }
+                        } else if !app.search_first(&query) {
+                            // No match, restore original selection
+                            if let Some(orig) = ui_state.search_original_selection() {
+                                app.restore_selection(
+                                    orig.selected_group,
+                                    orig.selected_email,
+                                    orig.selected_thread_email,
+                                    orig.selected_undo,
+                                );
+                            }
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        ui_state.append_search_char(c);
+                        // Incremental search - find first match
+                        let query = ui_state.search_query().to_string();
+                        if !app.search_first(&query) {
+                            // No match, restore original selection
+                            if let Some(orig) = ui_state.search_original_selection() {
+                                app.restore_selection(
+                                    orig.selected_group,
+                                    orig.selected_email,
+                                    orig.selected_thread_email,
+                                    orig.selected_undo,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // Toggle help menu with ?
             if key.code == KeyCode::Char('?') {
                 ui_state.show_help();
+                continue;
+            }
+
+            // Enter search mode with /
+            if key.code == KeyCode::Char('/') {
+                ui_state.enter_search_mode(&app);
+                continue;
+            }
+
+            // Search next/previous with n/N
+            if key.code == KeyCode::Char('n') && !ui_state.search_query().is_empty() {
+                let query = ui_state.search_query().to_string();
+                app.search_next(&query);
+                continue;
+            }
+            if key.code == KeyCode::Char('N') && !ui_state.search_query().is_empty() {
+                let query = ui_state.search_query().to_string();
+                app.search_previous(&query);
                 continue;
             }
 

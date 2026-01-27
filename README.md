@@ -40,9 +40,24 @@ This design ensures you always know exactly what emails will be affected before 
 |-----|--------|
 | `j` / `↓` | Move down |
 | `k` / `↑` | Move up |
-| `g` | Toggle grouping mode (email/domain) |
+| `gg` | Go to top |
+| `G` | Go to bottom |
+| `Ctrl+d` | Half page down |
+| `Ctrl+u` | Half page up |
+| `/` | Search (incremental, like vim) |
+| `n` | Next search match |
+| `N` | Previous search match |
+| `m` | Toggle grouping mode (email/domain) |
 | `r` | Refresh emails |
 | `q` | Quit / Go back |
+
+### Search Mode
+| Key | Action |
+|-----|--------|
+| Type | Incrementally search and jump to first match |
+| `Enter` | Confirm selection and exit search |
+| `Escape` | Cancel and restore original selection |
+| `Backspace` | Delete last character |
 
 ### Group List View
 | Key | Action |

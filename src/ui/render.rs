@@ -7,8 +7,8 @@ use ratatui::{
 use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
-    GroupListWidget, HelpBarWidget, HelpMenuWidget, InboxZeroWidget, StatusModalWidget,
-    ThreadViewWidget, UiState, UndoHistoryWidget,
+    GroupListWidget, HelpBarWidget, HelpMenuWidget, InboxZeroWidget, SearchBarWidget,
+    StatusModalWidget, ThreadViewWidget, UiState, UndoHistoryWidget,
 };
 
 /// Renders the entire application UI
@@ -111,9 +111,14 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
         }
     }
 
-    // Render help bar
-    let help = HelpBarWidget::new(app);
-    frame.render_widget(help, chunks[1]);
+    // Render help bar or search bar
+    if ui_state.is_searching() {
+        let search = SearchBarWidget::new(ui_state.search_query());
+        frame.render_widget(search, chunks[1]);
+    } else {
+        let help = HelpBarWidget::new(app);
+        frame.render_widget(help, chunks[1]);
+    }
 
     // Render confirmation dialog if active
     if let Some(action) = &ui_state.confirm_action {
