@@ -187,6 +187,16 @@ enum DemoPendingOp {
         thread_emails: Vec<Email>,
         subject: String,
     },
+    ArchiveSelected {
+        emails: Vec<Email>,
+        count: usize,
+        processed: usize,
+    },
+    DeleteSelected {
+        emails: Vec<Email>,
+        count: usize,
+        processed: usize,
+    },
     Undo {
         index: usize,
         emails: Vec<Email>,
@@ -199,10 +209,12 @@ impl DemoPendingOp {
         match self {
             DemoPendingOp::ArchiveSingle { .. }
             | DemoPendingOp::ArchiveGroup { .. }
-            | DemoPendingOp::ArchiveThread { .. } => "Archiving...",
+            | DemoPendingOp::ArchiveThread { .. }
+            | DemoPendingOp::ArchiveSelected { .. } => "Archiving...",
             DemoPendingOp::DeleteSingle { .. }
             | DemoPendingOp::DeleteGroup { .. }
-            | DemoPendingOp::DeleteThread { .. } => "Deleting...",
+            | DemoPendingOp::DeleteThread { .. }
+            | DemoPendingOp::DeleteSelected { .. } => "Deleting...",
             DemoPendingOp::Undo { .. } => "Restoring...",
         }
     }
@@ -255,8 +267,13 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
         // Check if pending operation should complete
         if let (Some(op), Some(start)) = (pending_op.take(), op_start_time.take()) {
             if start.elapsed() >= Duration::from_millis(DEMO_LATENCY_MS) {
-                // Execute the operation
-                execute_demo_op(&mut app, &mut ui_state, &mut undo_storage, op);
+                // Execute the operation (may return a continuation for multi-step operations)
+                if let Some(continuation) =
+                    execute_demo_op(&mut app, &mut ui_state, &mut undo_storage, op)
+                {
+                    pending_op = Some(continuation);
+                    op_start_time = Some(Instant::now());
+                }
             } else {
                 // Not ready yet, put it back
                 pending_op = Some(op);
@@ -284,7 +301,60 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                                 break;
                             }
                             if let Some(op) = handle_demo_confirmed_action(&app, action) {
-                                ui_state.set_busy(op.busy_message());
+                                // For selected emails, record undo entry and show "1 of N" progress
+                                match &op {
+                                    DemoPendingOp::ArchiveSelected { emails, count, .. } => {
+                                        // Record undo entry upfront
+                                        let message_ids: Vec<(String, String)> = emails
+                                            .iter()
+                                            .filter_map(|e| {
+                                                e.message_id.as_ref().map(|mid| {
+                                                    (mid.clone(), e.source_folder.clone())
+                                                })
+                                            })
+                                            .collect();
+                                        if !message_ids.is_empty() {
+                                            let undo_entry = UndoEntry {
+                                                action_type: UndoActionType::Archive,
+                                                context: UndoContext::Group {
+                                                    sender: format!("{} selected", count),
+                                                },
+                                                emails: message_ids,
+                                                current_folder: "[Gmail]/All Mail".to_string(),
+                                            };
+                                            undo_storage.push(emails.clone());
+                                            app.push_undo(undo_entry);
+                                        }
+                                        ui_state.set_busy(format!("Archiving 1 of {}...", count));
+                                    }
+                                    DemoPendingOp::DeleteSelected { emails, count, .. } => {
+                                        // Record undo entry upfront
+                                        let message_ids: Vec<(String, String)> = emails
+                                            .iter()
+                                            .filter_map(|e| {
+                                                e.message_id.as_ref().map(|mid| {
+                                                    (mid.clone(), e.source_folder.clone())
+                                                })
+                                            })
+                                            .collect();
+                                        if !message_ids.is_empty() {
+                                            let undo_entry = UndoEntry {
+                                                action_type: UndoActionType::Delete,
+                                                context: UndoContext::Group {
+                                                    sender: format!("{} selected", count),
+                                                },
+                                                emails: message_ids,
+                                                current_folder: "[Gmail]/Trash".to_string(),
+                                            };
+                                            undo_storage.push(emails.clone());
+                                            app.push_undo(undo_entry);
+                                        }
+                                        ui_state.set_busy(format!("Deleting 1 of {}...", count));
+                                    }
+                                    _ => {
+                                        ui_state.set_busy(op.busy_message());
+                                    }
+                                }
                                 pending_op = Some(op);
                                 op_start_time = Some(Instant::now());
                             }
@@ -456,6 +526,21 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 KeyCode::Char('D') => {
                     handle_demo_delete_all(&app, &mut ui_state, protect_threads);
                 }
+                KeyCode::Char(' ') => {
+                    if app.view == View::Thread {
+                        ui_state.set_status(
+                            "Cannot select individual emails in thread view. Press Enter to open the thread."
+                                .to_string(),
+                        );
+                    } else if app.view == View::EmailList
+                        && let app::SelectionResult::IsThread = app.toggle_email_selection()
+                    {
+                        ui_state.set_status(
+                            "Threads must be handled individually. Press Enter to view this thread."
+                                .to_string(),
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -464,16 +549,17 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
     Ok(())
 }
 
-/// Executes a pending demo operation after simulated latency
+/// Executes a pending demo operation after simulated latency.
+/// Returns Some(op) if there's more work to do (for multi-step operations like selected emails).
 fn execute_demo_op(
     app: &mut App,
     ui_state: &mut UiState,
     undo_storage: &mut DemoUndoStorage,
     op: DemoPendingOp,
-) {
-    ui_state.clear_busy();
+) -> Option<DemoPendingOp> {
     match op {
         DemoPendingOp::ArchiveSingle { email } => {
+            ui_state.clear_busy();
             if let Some(ref message_id) = email.message_id {
                 let undo_entry = UndoEntry {
                     action_type: UndoActionType::Archive,
@@ -487,8 +573,10 @@ fn execute_demo_op(
                 app.push_undo(undo_entry);
             }
             app.remove_email(&email.id);
+            None
         }
         DemoPendingOp::DeleteSingle { email } => {
+            ui_state.clear_busy();
             if let Some(ref message_id) = email.message_id {
                 let undo_entry = UndoEntry {
                     action_type: UndoActionType::Delete,
@@ -502,8 +590,10 @@ fn execute_demo_op(
                 app.push_undo(undo_entry);
             }
             app.remove_email(&email.id);
+            None
         }
         DemoPendingOp::ArchiveGroup { emails, sender } => {
+            ui_state.clear_busy();
             let message_ids: Vec<(String, String)> = emails
                 .iter()
                 .filter_map(|e| {
@@ -523,8 +613,10 @@ fn execute_demo_op(
                 app.push_undo(undo_entry);
             }
             app.remove_current_group_emails();
+            None
         }
         DemoPendingOp::DeleteGroup { emails, sender } => {
+            ui_state.clear_busy();
             let message_ids: Vec<(String, String)> = emails
                 .iter()
                 .filter_map(|e| {
@@ -544,12 +636,14 @@ fn execute_demo_op(
                 app.push_undo(undo_entry);
             }
             app.remove_current_group_emails();
+            None
         }
         DemoPendingOp::ArchiveThread {
             thread_id,
             thread_emails,
             subject,
         } => {
+            ui_state.clear_busy();
             let message_ids: Vec<(String, String)> = thread_emails
                 .iter()
                 .filter_map(|e| {
@@ -572,12 +666,14 @@ fn execute_demo_op(
             if app.view == View::Thread {
                 app.exit();
             }
+            None
         }
         DemoPendingOp::DeleteThread {
             thread_id,
             thread_emails,
             subject,
         } => {
+            ui_state.clear_busy();
             let message_ids: Vec<(String, String)> = thread_emails
                 .iter()
                 .filter_map(|e| {
@@ -600,10 +696,78 @@ fn execute_demo_op(
             if app.view == View::Thread {
                 app.exit();
             }
+            None
+        }
+        DemoPendingOp::ArchiveSelected {
+            mut emails,
+            count,
+            processed,
+        } => {
+            // Process one email per cycle for progress display
+            if let Some(email) = emails.first().cloned() {
+                app.remove_email(&email.id);
+                emails.remove(0);
+                let new_processed = processed + 1;
+
+                if emails.is_empty() {
+                    // All done - record undo entry and clear selection
+                    ui_state.clear_busy();
+                    // Collect message IDs from all originally selected emails for undo
+                    // (we need to get them from the emails we stored, but they're removed now)
+                    // For simplicity, we record the undo at the start instead
+                    app.clear_selection();
+                    None
+                } else {
+                    // More to process - update progress and continue
+                    ui_state.set_busy(format!("Archiving {} of {}...", new_processed + 1, count));
+                    Some(DemoPendingOp::ArchiveSelected {
+                        emails,
+                        count,
+                        processed: new_processed,
+                    })
+                }
+            } else {
+                ui_state.clear_busy();
+                app.clear_selection();
+                None
+            }
+        }
+        DemoPendingOp::DeleteSelected {
+            mut emails,
+            count,
+            processed,
+        } => {
+            // Process one email per cycle for progress display
+            if let Some(email) = emails.first().cloned() {
+                app.remove_email(&email.id);
+                emails.remove(0);
+                let new_processed = processed + 1;
+
+                if emails.is_empty() {
+                    // All done - clear selection
+                    ui_state.clear_busy();
+                    app.clear_selection();
+                    None
+                } else {
+                    // More to process - update progress and continue
+                    ui_state.set_busy(format!("Deleting {} of {}...", new_processed + 1, count));
+                    Some(DemoPendingOp::DeleteSelected {
+                        emails,
+                        count,
+                        processed: new_processed,
+                    })
+                }
+            } else {
+                ui_state.clear_busy();
+                app.clear_selection();
+                None
+            }
         }
         DemoPendingOp::Undo { index, emails } => {
+            ui_state.clear_busy();
             app.restore_emails(emails);
             app.pop_undo(index);
+            None
         }
     }
 }
@@ -617,6 +781,16 @@ fn handle_demo_archive(
     match app.view {
         View::GroupList | View::UndoHistory => None,
         View::EmailList => {
+            // Check if there are selected emails - require confirmation
+            if app.has_selection() {
+                let count = app.selected_email_ids().len();
+                if count > 0 {
+                    ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
+                }
+                return None;
+            }
+
+            // No selection - archive single email
             // Protect threads: require navigating into thread if it has multiple emails
             let thread_size = app.current_thread_emails().len();
             if protect_threads && thread_size > 1 {
@@ -674,6 +848,16 @@ fn handle_demo_delete(
     match app.view {
         View::GroupList | View::UndoHistory => None,
         View::EmailList => {
+            // Check if there are selected emails - require confirmation
+            if app.has_selection() {
+                let count = app.selected_email_ids().len();
+                if count > 0 {
+                    ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
+                }
+                return None;
+            }
+
+            // No selection - delete single email
             // Protect threads: require navigating into thread if it has multiple emails
             let thread_size = app.current_thread_emails().len();
             if protect_threads && thread_size > 1 {
@@ -773,6 +957,30 @@ fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<Demo
                 subject: email.subject.clone(),
             }
         }),
+        ConfirmAction::ArchiveSelected { count } => {
+            let emails = app.selected_emails_cloned();
+            if !emails.is_empty() {
+                Some(DemoPendingOp::ArchiveSelected {
+                    emails,
+                    count,
+                    processed: 0,
+                })
+            } else {
+                None
+            }
+        }
+        ConfirmAction::DeleteSelected { count } => {
+            let emails = app.selected_emails_cloned();
+            if !emails.is_empty() {
+                Some(DemoPendingOp::DeleteSelected {
+                    emails,
+                    count,
+                    processed: 0,
+                })
+            } else {
+                None
+            }
+        }
         ConfirmAction::Quit => unreachable!(),
     }
 }
@@ -1048,6 +1256,9 @@ fn run_app(
                                     app.exit();
                                 }
                             }
+                            PendingOp::ArchiveSelected => {
+                                app.remove_selected_emails();
+                            }
                             _ => {}
                         }
                     }
@@ -1066,6 +1277,9 @@ fn run_app(
                                 if app.view == View::Thread {
                                     app.exit();
                                 }
+                            }
+                            PendingOp::DeleteSelected => {
+                                app.remove_selected_emails();
                             }
                             _ => {}
                         }
@@ -1335,6 +1549,21 @@ fn run_app(
                 KeyCode::Char('D') => {
                     handle_delete_all(&app, &mut ui_state, protect_threads);
                 }
+                KeyCode::Char(' ') => {
+                    if app.view == View::Thread {
+                        ui_state.set_status(
+                            "Cannot select individual emails in thread view. Press Enter to open the thread."
+                                .to_string(),
+                        );
+                    } else if app.view == View::EmailList
+                        && let app::SelectionResult::IsThread = app.toggle_email_selection()
+                    {
+                        ui_state.set_status(
+                            "Threads must be handled individually. Press Enter to view this thread."
+                                .to_string(),
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -1351,10 +1580,12 @@ enum PendingOp {
     DeleteGroup,
     ArchiveThread(String), // thread id
     DeleteThread(String),  // thread id
+    ArchiveSelected,       // selected emails
+    DeleteSelected,        // selected emails
     Undo(usize),           // index in undo history
 }
 
-/// Handles the 'a' key - archive single email (not available in thread view)
+/// Handles the 'a' key - archive single email or selected emails (not available in thread view)
 fn handle_archive(
     app: &mut App,
     cmd_tx: &mpsc::Sender<ImapCommand>,
@@ -1367,6 +1598,16 @@ fn handle_archive(
             // No action on single 'a' in group list or undo history
         }
         View::EmailList => {
+            // Check if there are selected emails - require confirmation
+            if app.has_selection() {
+                let count = app.selected_email_ids().len();
+                if count > 0 {
+                    ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
+                }
+                return Ok(());
+            }
+
+            // No selection - archive single email
             // Allow if thread has only one email (nothing else to review)
             let thread_size = app.current_thread_emails().len();
             if protect_threads && thread_size > 1 {
@@ -1439,7 +1680,7 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) 
     }
 }
 
-/// Handles the 'd' key - delete single email (not available in thread view)
+/// Handles the 'd' key - delete single email or selected emails (not available in thread view)
 fn handle_delete(
     app: &mut App,
     cmd_tx: &mpsc::Sender<ImapCommand>,
@@ -1452,6 +1693,16 @@ fn handle_delete(
             // No action on single 'd' in group list or undo history
         }
         View::EmailList => {
+            // Check if there are selected emails - require confirmation
+            if app.has_selection() {
+                let count = app.selected_email_ids().len();
+                if count > 0 {
+                    ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
+                }
+                return Ok(());
+            }
+
+            // No selection - delete single email
             // Allow if thread has only one email (nothing else to review)
             let thread_size = app.current_thread_emails().len();
             if protect_threads && thread_size > 1 {
@@ -1666,6 +1917,50 @@ fn handle_confirmed_action(
 
                 ui_state.set_busy(format!("Deleting thread ({} emails)...", email_ids.len()));
                 *pending_operation = Some(PendingOp::DeleteThread(tid));
+                cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
+            }
+        }
+        ConfirmAction::ArchiveSelected { count } => {
+            let email_ids = app.selected_email_ids();
+            let message_ids = app.selected_message_ids();
+            if !email_ids.is_empty() {
+                // Record undo entry before the action
+                if !message_ids.is_empty() {
+                    let undo_entry = UndoEntry {
+                        action_type: UndoActionType::Archive,
+                        context: UndoContext::Group {
+                            sender: format!("{} selected", count),
+                        },
+                        emails: message_ids,
+                        current_folder: "[Gmail]/All Mail".to_string(),
+                    };
+                    app.push_undo(undo_entry);
+                }
+
+                ui_state.set_busy(format!("Archiving {} emails...", email_ids.len()));
+                *pending_operation = Some(PendingOp::ArchiveSelected);
+                cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
+            }
+        }
+        ConfirmAction::DeleteSelected { count } => {
+            let email_ids = app.selected_email_ids();
+            let message_ids = app.selected_message_ids();
+            if !email_ids.is_empty() {
+                // Record undo entry before the action
+                if !message_ids.is_empty() {
+                    let undo_entry = UndoEntry {
+                        action_type: UndoActionType::Delete,
+                        context: UndoContext::Group {
+                            sender: format!("{} selected", count),
+                        },
+                        emails: message_ids,
+                        current_folder: "[Gmail]/Trash".to_string(),
+                    };
+                    app.push_undo(undo_entry);
+                }
+
+                ui_state.set_busy(format!("Deleting {} emails...", email_ids.len()));
+                *pending_operation = Some(PendingOp::DeleteSelected);
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
         }

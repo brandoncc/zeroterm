@@ -39,6 +39,10 @@ pub enum ConfirmAction {
     ArchiveThread { thread_email_count: usize },
     /// Delete entire thread (all emails including other senders)
     DeleteThread { thread_email_count: usize },
+    /// Archive selected emails
+    ArchiveSelected { count: usize },
+    /// Delete selected emails
+    DeleteSelected { count: usize },
     /// Quit the application
     Quit,
 }
@@ -63,6 +67,12 @@ impl ConfirmAction {
                     "🗑  Delete entire thread ({} email(s))? (y/n)",
                     thread_email_count
                 )
+            }
+            ConfirmAction::ArchiveSelected { count } => {
+                format!("📥 Archive {} selected email(s)? (y/n)", count)
+            }
+            ConfirmAction::DeleteSelected { count } => {
+                format!("🗑  Delete {} selected email(s)? (y/n)", count)
             }
             ConfirmAction::Quit => "🚪 Quit zeroterm? (y/n)".to_string(),
         }
@@ -675,11 +685,14 @@ impl StatefulWidget for EmailListWidget<'_> {
             .iter()
             .map(|email| {
                 let has_multiple_messages = self.app.thread_has_multiple_messages(&email.thread_id);
+                let is_selected = self.app.is_email_selected(&email.id);
 
+                let selection_indicator = if is_selected { "●" } else { " " };
                 let thread_indicator = if has_multiple_messages { "◈" } else { " " };
                 let date_str = format_date(&email.date);
 
                 Row::new(vec![
+                    selection_indicator.to_string(),
                     date_str,
                     thread_indicator.to_string(),
                     email.subject.clone(),
@@ -690,6 +703,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         let table = Table::new(
             rows,
             [
+                Constraint::Length(1),  // Selection indicator
                 Constraint::Length(12), // Date column
                 Constraint::Length(1),  // Thread indicator
                 Constraint::Min(20),    // Subject
@@ -933,7 +947,13 @@ impl Widget for HelpBarWidget<'_> {
                     "j/k: navigate  Enter: open  q: quit  ?: more"
                 }
             }
-            View::EmailList => "j/k: navigate  Enter: open  a/d: archive/delete  q: back  ?: more",
+            View::EmailList => {
+                if self.app.has_selection() {
+                    "j/k: navigate  Space: select  a/d: archive/delete selected  q: back  ?: more"
+                } else {
+                    "j/k: navigate  Space: select  a/d: archive/delete  q: back  ?: more"
+                }
+            }
             View::Thread => "j/k: navigate  Enter: browser  A/D: archive/delete  q: back  ?: more",
             View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
         };

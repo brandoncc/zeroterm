@@ -22,6 +22,17 @@ pub enum View {
     UndoHistory,
 }
 
+/// Result of attempting to toggle email selection
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SelectionResult {
+    /// Selection was toggled successfully
+    Toggled,
+    /// Cannot select because email is part of a multi-message thread
+    IsThread,
+    /// No email to select (wrong view or no current email)
+    NoEmail,
+}
+
 /// Type of action that can be undone
 #[derive(Debug, Clone, PartialEq)]
 pub enum UndoActionType {
@@ -110,6 +121,8 @@ pub struct App {
     viewing_group_key: Option<String>,
     /// Whether emails have been loaded at least once (to distinguish from inbox zero)
     emails_loaded: bool,
+    /// Set of selected email IDs (for multi-select operations)
+    selected_emails: HashSet<String>,
 }
 
 impl Default for App {
@@ -136,6 +149,7 @@ impl App {
             previous_view: None,
             viewing_group_key: None,
             emails_loaded: false,
+            selected_emails: HashSet::new(),
         }
     }
 
@@ -237,6 +251,7 @@ impl App {
         self.selected_group = 0;
         self.selected_email = None;
         self.selected_thread_email = None;
+        self.clear_selection();
     }
 
     /// Selects the next item based on current view
@@ -571,6 +586,7 @@ impl App {
             } else {
                 Some(0)
             };
+            self.clear_selection();
         }
     }
 
@@ -579,6 +595,7 @@ impl App {
         self.view = View::GroupList;
         self.selected_email = None;
         self.viewing_group_key = None;
+        self.clear_selection();
     }
 
     /// Enters the thread view for the currently selected email
@@ -586,6 +603,7 @@ impl App {
         if self.current_email().is_some() {
             self.view = View::Thread;
             self.selected_thread_email = Some(0);
+            self.clear_selection();
         }
     }
 
@@ -593,6 +611,7 @@ impl App {
     fn exit_to_emails(&mut self) {
         self.view = View::EmailList;
         self.selected_thread_email = None;
+        self.clear_selection();
     }
 
     /// Gets the currently selected group, if any
@@ -849,6 +868,119 @@ impl App {
         let thread_emails = self.current_thread_emails();
         self.selected_thread_email
             .and_then(|idx| thread_emails.get(idx).copied())
+    }
+
+    /// Toggles selection of the currently highlighted email in EmailList view.
+    /// Returns the result of the toggle attempt.
+    pub fn toggle_email_selection(&mut self) -> SelectionResult {
+        if self.view != View::EmailList {
+            return SelectionResult::NoEmail;
+        }
+
+        let Some(email) = self.current_email() else {
+            return SelectionResult::NoEmail;
+        };
+
+        // Don't allow selecting emails that are part of multi-message threads
+        if self.thread_has_multiple_messages(&email.thread_id) {
+            return SelectionResult::IsThread;
+        }
+
+        let email_id = email.id.clone();
+        if self.is_email_selected(&email_id) {
+            self.selected_emails.remove(&email_id);
+        } else {
+            self.selected_emails.insert(email_id);
+        }
+        SelectionResult::Toggled
+    }
+
+    /// Clears all selected emails
+    pub fn clear_selection(&mut self) {
+        self.selected_emails.clear();
+    }
+
+    /// Returns whether a specific email is selected
+    pub fn is_email_selected(&self, email_id: &str) -> bool {
+        self.selected_emails.contains(email_id)
+    }
+
+    /// Returns the number of selected emails
+    #[cfg(test)]
+    pub fn selected_email_count(&self) -> usize {
+        self.selected_emails.len()
+    }
+
+    /// Returns whether any emails are selected
+    pub fn has_selection(&self) -> bool {
+        !self.selected_emails.is_empty()
+    }
+
+    /// Returns the selected emails as (id, source_folder) pairs
+    pub fn selected_email_ids(&self) -> Vec<(String, String)> {
+        self.current_group()
+            .map(|g| {
+                g.emails
+                    .iter()
+                    .filter(|e| self.selected_emails.contains(&e.id))
+                    .map(|e| (e.id.clone(), e.source_folder.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns the selected emails' Message-IDs and source folders (for undo support)
+    pub fn selected_message_ids(&self) -> Vec<(String, String)> {
+        self.current_group()
+            .map(|g| {
+                g.emails
+                    .iter()
+                    .filter(|e| self.selected_emails.contains(&e.id))
+                    .filter_map(|e| {
+                        e.message_id
+                            .as_ref()
+                            .map(|mid| (mid.clone(), e.source_folder.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns clones of the selected Email objects
+    pub fn selected_emails_cloned(&self) -> Vec<Email> {
+        self.current_group()
+            .map(|g| {
+                g.emails
+                    .iter()
+                    .filter(|e| self.selected_emails.contains(&e.id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Removes all selected emails from the app
+    pub fn remove_selected_emails(&mut self) {
+        let ids_to_remove = self.selected_emails.clone();
+        for id in &ids_to_remove {
+            self.emails.retain(|e| &e.id != id);
+        }
+        self.clear_selection();
+        self.regroup();
+
+        // Adjust selected_email for the (possibly changed) current group
+        if let Some(group) = self.groups.get(self.selected_group) {
+            let threads = group.threads();
+            if threads.is_empty() {
+                self.selected_email = None;
+            } else if self.selected_email.is_none()
+                || self.selected_email.is_some_and(|idx| idx >= threads.len())
+            {
+                self.selected_email = Some(threads.len().saturating_sub(1));
+            }
+        } else {
+            self.selected_email = None;
+        }
     }
 }
 
@@ -1705,5 +1837,138 @@ mod tests {
             Some(0),
             "Selection should snap to first email when out of bounds"
         );
+    }
+
+    #[test]
+    fn test_toggle_email_selection() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+
+        // Must be in EmailList view to toggle selection
+        app.enter();
+        assert_eq!(app.view, View::EmailList);
+
+        // Initially no selections
+        assert_eq!(app.selected_email_count(), 0);
+        assert!(!app.has_selection());
+
+        // Get the current email's ID
+        let first_email_id = app.current_email().unwrap().id.clone();
+
+        // Toggle selection on first email
+        assert_eq!(app.toggle_email_selection(), SelectionResult::Toggled);
+        assert!(app.is_email_selected(&first_email_id));
+        assert_eq!(app.selected_email_count(), 1);
+
+        // Move to second email and get its ID
+        app.select_next();
+        let second_email_id = app.current_email().unwrap().id.clone();
+        assert_ne!(first_email_id, second_email_id);
+
+        // Toggle selection on second email
+        assert_eq!(app.toggle_email_selection(), SelectionResult::Toggled);
+        assert!(app.is_email_selected(&first_email_id));
+        assert!(app.is_email_selected(&second_email_id));
+        assert_eq!(app.selected_email_count(), 2);
+
+        // Toggle again to deselect
+        assert_eq!(app.toggle_email_selection(), SelectionResult::Toggled);
+        assert!(app.is_email_selected(&first_email_id));
+        assert!(!app.is_email_selected(&second_email_id));
+        assert_eq!(app.selected_email_count(), 1);
+    }
+
+    #[test]
+    fn test_toggle_email_selection_only_works_in_email_list_view() {
+        let mut app = App::new();
+        app.set_emails(vec![create_test_email("1", "alice@example.com")]);
+
+        // In GroupList view, toggle should return NoEmail
+        assert_eq!(app.view, View::GroupList);
+        assert_eq!(app.toggle_email_selection(), SelectionResult::NoEmail);
+        assert_eq!(app.selected_email_count(), 0);
+
+        // Enter email list
+        app.enter();
+        assert_eq!(app.view, View::EmailList);
+
+        // Now toggle should work
+        assert_eq!(app.toggle_email_selection(), SelectionResult::Toggled);
+        assert_eq!(app.selected_email_count(), 1);
+    }
+
+    #[test]
+    fn test_toggle_email_selection_rejects_threads() {
+        let mut app = App::new();
+        // Create a multi-message thread
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+        ]);
+
+        app.enter();
+        assert_eq!(app.view, View::EmailList);
+
+        // Try to select an email that's part of a thread - should be rejected
+        assert_eq!(app.toggle_email_selection(), SelectionResult::IsThread);
+        assert_eq!(app.selected_email_count(), 0);
+    }
+
+    #[test]
+    fn test_selection_cleared_on_view_change() {
+        let mut app = App::new();
+        // Use separate threads so emails can be selected
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+
+        // Enter email list and select an email
+        app.enter();
+        assert_eq!(app.toggle_email_selection(), SelectionResult::Toggled);
+        assert_eq!(app.selected_email_count(), 1);
+
+        // Enter thread view - selection should be cleared
+        app.enter();
+        assert_eq!(app.view, View::Thread);
+        assert_eq!(app.selected_email_count(), 0);
+
+        // Exit to email list and select again
+        app.exit();
+        assert_eq!(app.view, View::EmailList);
+        assert_eq!(app.toggle_email_selection(), SelectionResult::Toggled);
+        assert_eq!(app.selected_email_count(), 1);
+
+        // Exit to group list - selection should be cleared
+        app.exit();
+        assert_eq!(app.view, View::GroupList);
+        assert_eq!(app.selected_email_count(), 0);
+    }
+
+    #[test]
+    fn test_selection_cleared_on_group_mode_toggle() {
+        let mut app = App::new();
+        app.set_emails(vec![create_test_email("1", "alice@example.com")]);
+
+        // Enter email list and select
+        app.enter();
+        app.toggle_email_selection();
+        assert_eq!(app.selected_email_count(), 1);
+
+        // Exit to group list
+        app.exit();
+
+        // Select again
+        app.enter();
+        app.toggle_email_selection();
+        assert_eq!(app.selected_email_count(), 1);
+
+        // Exit and toggle group mode
+        app.exit();
+        app.toggle_group_mode();
+        assert_eq!(app.selected_email_count(), 0);
     }
 }
