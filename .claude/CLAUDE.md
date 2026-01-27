@@ -43,3 +43,11 @@ src/
 - TDD approach - tests written alongside implementation
 - Mock Gmail client via `mockall` crate for API tests
 - 43 unit tests covering grouping, navigation, thread handling
+
+## Development Workflow
+
+- Before making any commit, run the linter, formatter, and tests:
+  - `cargo fmt` - formatter
+  - `cargo clippy --all-targets --all-features -- -D warnings` - linter
+  - `cargo test` - tests
+- Before making a PR, bump the version using semver
