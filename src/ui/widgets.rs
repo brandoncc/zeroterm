@@ -144,6 +144,21 @@ pub struct UiState {
     pub undo_scroll_offset: usize,
     /// When true, the help menu is displayed
     pub show_help: bool,
+    /// When true, the user is typing a search query
+    pub search_mode: bool,
+    /// The current search query being typed
+    pub search_query: String,
+    /// Original selection before search started (for restore on no match)
+    pub search_original_selection: Option<SearchSelection>,
+}
+
+/// Stores the selection state before search started
+#[derive(Debug, Clone)]
+pub struct SearchSelection {
+    pub selected_group: usize,
+    pub selected_email: Option<usize>,
+    pub selected_thread_email: Option<usize>,
+    pub selected_undo: usize,
 }
 
 impl UiState {
@@ -228,6 +243,49 @@ impl UiState {
     /// Returns true if the help menu is displayed
     pub fn is_showing_help(&self) -> bool {
         self.show_help
+    }
+
+    /// Enter search mode, storing the current selection for potential restore
+    pub fn enter_search_mode(&mut self, app: &App) {
+        self.search_mode = true;
+        self.search_query.clear();
+        self.search_original_selection = Some(SearchSelection {
+            selected_group: app.selected_group,
+            selected_email: app.selected_email,
+            selected_thread_email: app.selected_thread_email,
+            selected_undo: app.selected_undo,
+        });
+    }
+
+    /// Exit search mode
+    pub fn exit_search_mode(&mut self) {
+        self.search_mode = false;
+        self.search_original_selection = None;
+    }
+
+    /// Returns true if in search mode
+    pub fn is_searching(&self) -> bool {
+        self.search_mode
+    }
+
+    /// Append a character to the search query
+    pub fn append_search_char(&mut self, c: char) {
+        self.search_query.push(c);
+    }
+
+    /// Remove the last character from the search query
+    pub fn backspace_search(&mut self) {
+        self.search_query.pop();
+    }
+
+    /// Get the current search query
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// Get the original selection before search started
+    pub fn search_original_selection(&self) -> Option<&SearchSelection> {
+        self.search_original_selection.as_ref()
     }
 }
 
@@ -926,6 +984,25 @@ impl Widget for UndoHistoryWidget<'_> {
     }
 }
 
+/// Widget for the search bar at the bottom
+pub struct SearchBarWidget<'a> {
+    query: &'a str,
+}
+
+impl<'a> SearchBarWidget<'a> {
+    pub fn new(query: &'a str) -> Self {
+        Self { query }
+    }
+}
+
+impl Widget for SearchBarWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let text = format!("/{}", self.query);
+        let paragraph = Paragraph::new(text).style(Style::default().fg(Color::Yellow));
+        paragraph.render(area, buf);
+    }
+}
+
 /// Widget for the help bar at the bottom
 pub struct HelpBarWidget<'a> {
     app: &'a App,
@@ -944,18 +1021,20 @@ impl Widget for HelpBarWidget<'_> {
                 if self.app.groups.is_empty() {
                     "r: refresh  q: quit  ?: more"
                 } else {
-                    "j/k: navigate  Enter: open  q: quit  ?: more"
+                    "j/k: navigate  /: search  Enter: open  q: quit  ?: more"
                 }
             }
             View::EmailList => {
                 if self.app.has_selection() {
-                    "j/k: navigate  Space: select  a/d: archive/delete selected  q: back  ?: more"
+                    "j/k: navigate  /: search  a/d: archive/delete selected  q: back  ?: more"
                 } else {
-                    "j/k: navigate  Space: select  a/d: archive/delete  q: back  ?: more"
+                    "j/k: navigate  /: search  a/d: archive/delete  q: back  ?: more"
                 }
             }
-            View::Thread => "j/k: navigate  Enter: browser  A/D: archive/delete  q: back  ?: more",
-            View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
+            View::Thread => {
+                "j/k: navigate  /: search  Enter: browser  A/D: archive/delete  q: back  ?: more"
+            }
+            View::UndoHistory => "j/k: navigate  /: search  Enter: undo  q: back  ?: more",
         };
 
         let paragraph = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
@@ -984,6 +1063,9 @@ impl HelpMenuWidget {
                 ("G", "Go to bottom"),
                 ("Ctrl+d", "Half page down"),
                 ("Ctrl+u", "Half page up"),
+                ("/", "Search"),
+                ("n", "Next match"),
+                ("N", "Previous match"),
             ],
         );
 
