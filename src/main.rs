@@ -1162,35 +1162,69 @@ fn spawn_imap_worker(
                     let _ = resp_tx.send(ImapResponse::DeleteResult(result));
                 }
                 ImapCommand::ArchiveMultiple(ids_and_folders) => {
+                    use std::collections::HashMap;
+                    const BATCH_SIZE: usize = 250;
+
                     let total = ids_and_folders.len();
+
+                    // Group by folder
+                    let mut by_folder: HashMap<&str, Vec<String>> = HashMap::new();
+                    for (uid, folder) in &ids_and_folders {
+                        by_folder
+                            .entry(folder.as_str())
+                            .or_default()
+                            .push(uid.clone());
+                    }
+
                     let mut result = Ok(());
-                    for (i, (id, folder)) in ids_and_folders.iter().enumerate() {
-                        // Send progress update
-                        let _ = resp_tx.send(ImapResponse::Progress(
-                            i + 1,
-                            total,
-                            "Archiving".to_string(),
-                        ));
-                        if let Err(e) = client.archive_email(id, folder) {
-                            result = Err(e);
-                            break;
+                    let mut processed = 0;
+
+                    'outer: for (folder, uids) in by_folder {
+                        for chunk in uids.chunks(BATCH_SIZE) {
+                            let _ = resp_tx.send(ImapResponse::Progress(
+                                processed + chunk.len(),
+                                total,
+                                "Archiving".to_string(),
+                            ));
+                            if let Err(e) = client.archive_batch(chunk, folder) {
+                                result = Err(e);
+                                break 'outer;
+                            }
+                            processed += chunk.len();
                         }
                     }
                     let _ = resp_tx.send(ImapResponse::MultiArchiveResult(result));
                 }
                 ImapCommand::DeleteMultiple(ids_and_folders) => {
+                    use std::collections::HashMap;
+                    const BATCH_SIZE: usize = 250;
+
                     let total = ids_and_folders.len();
+
+                    // Group by folder
+                    let mut by_folder: HashMap<&str, Vec<String>> = HashMap::new();
+                    for (uid, folder) in &ids_and_folders {
+                        by_folder
+                            .entry(folder.as_str())
+                            .or_default()
+                            .push(uid.clone());
+                    }
+
                     let mut result = Ok(());
-                    for (i, (id, folder)) in ids_and_folders.iter().enumerate() {
-                        // Send progress update
-                        let _ = resp_tx.send(ImapResponse::Progress(
-                            i + 1,
-                            total,
-                            "Deleting".to_string(),
-                        ));
-                        if let Err(e) = client.delete_email(id, folder) {
-                            result = Err(e);
-                            break;
+                    let mut processed = 0;
+
+                    'outer: for (folder, uids) in by_folder {
+                        for chunk in uids.chunks(BATCH_SIZE) {
+                            let _ = resp_tx.send(ImapResponse::Progress(
+                                processed + chunk.len(),
+                                total,
+                                "Deleting".to_string(),
+                            ));
+                            if let Err(e) = client.delete_batch(chunk, folder) {
+                                result = Err(e);
+                                break 'outer;
+                            }
+                            processed += chunk.len();
                         }
                     }
                     let _ = resp_tx.send(ImapResponse::MultiDeleteResult(result));

@@ -19,6 +19,14 @@ pub trait EmailClient {
     /// Deletes an email (moves to trash)
     fn delete_email(&mut self, email_id: &str, folder: &str) -> Result<()>;
 
+    /// Archives a batch of emails from a single folder (moves to All Mail)
+    /// UIDs should be from the same folder for efficiency
+    fn archive_batch(&mut self, uids: &[String], folder: &str) -> Result<()>;
+
+    /// Deletes a batch of emails from a single folder (moves to Trash)
+    /// UIDs should be from the same folder for efficiency
+    fn delete_batch(&mut self, uids: &[String], folder: &str) -> Result<()>;
+
     /// Restores emails to their original folders by searching for them by Message-ID
     /// Takes a list of (message_id, current_folder, destination_folder) tuples
     fn restore_emails(&mut self, emails: &[(String, String, String)]) -> Result<()>;
@@ -206,6 +214,40 @@ impl EmailClient for ImapClient {
         self.session
             .uid_mv(uid, "[Gmail]/Trash")
             .context("Failed to delete email")?;
+
+        Ok(())
+    }
+
+    fn archive_batch(&mut self, uids: &[String], folder: &str) -> Result<()> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+
+        self.session
+            .select(folder)
+            .context(format!("Failed to select {}", folder))?;
+
+        let uid_sequence = uids.join(",");
+        self.session
+            .uid_mv(&uid_sequence, "[Gmail]/All Mail")
+            .context("Failed to archive emails")?;
+
+        Ok(())
+    }
+
+    fn delete_batch(&mut self, uids: &[String], folder: &str) -> Result<()> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+
+        self.session
+            .select(folder)
+            .context(format!("Failed to select {}", folder))?;
+
+        let uid_sequence = uids.join(",");
+        self.session
+            .uid_mv(&uid_sequence, "[Gmail]/Trash")
+            .context("Failed to delete emails")?;
 
         Ok(())
     }
