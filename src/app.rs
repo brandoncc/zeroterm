@@ -108,6 +108,8 @@ pub struct App {
     previous_view: Option<View>,
     /// The group key we're currently viewing (to preserve view after deletions)
     viewing_group_key: Option<String>,
+    /// Whether emails have been loaded at least once (to distinguish from inbox zero)
+    emails_loaded: bool,
 }
 
 impl Default for App {
@@ -133,6 +135,7 @@ impl App {
             selected_undo: 0,
             previous_view: None,
             viewing_group_key: None,
+            emails_loaded: false,
         }
     }
 
@@ -141,9 +144,15 @@ impl App {
         self.user_email = Some(email);
     }
 
+    /// Returns whether emails have been loaded at least once
+    pub fn has_loaded_emails(&self) -> bool {
+        self.emails_loaded
+    }
+
     /// Sets the emails and regroups them according to current mode
     pub fn set_emails(&mut self, emails: Vec<Email>) {
         self.emails = emails;
+        self.emails_loaded = true;
         self.regroup();
     }
 
@@ -902,6 +911,18 @@ mod tests {
         assert_eq!(app.selected_group, 0);
         assert_eq!(app.selected_email, None);
         assert_eq!(app.selected_thread_email, None);
+        assert!(app.groups.is_empty());
+        assert!(!app.has_loaded_emails());
+    }
+
+    #[test]
+    fn test_has_loaded_emails_set_after_set_emails() {
+        let mut app = App::new();
+        assert!(!app.has_loaded_emails());
+
+        // Even setting empty emails should mark as loaded
+        app.set_emails(vec![]);
+        assert!(app.has_loaded_emails());
         assert!(app.groups.is_empty());
     }
 

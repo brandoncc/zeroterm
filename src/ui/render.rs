@@ -29,7 +29,8 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList => {
             // Check if inbox is empty - show celebration screen!
-            if app.groups.is_empty() {
+            // Only show if emails have been loaded (empty before loading is not inbox zero)
+            if app.groups.is_empty() && app.has_loaded_emails() {
                 ui_state.tick_celebration();
                 let widget = InboxZeroWidget::new(ui_state.celebration_frame);
                 frame.render_widget(widget, chunks[0]);
