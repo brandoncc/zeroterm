@@ -50,6 +50,12 @@ enum ImapResponse {
     RestoreResult(Result<()>),
     /// Progress update during bulk operations (current, total, action)
     Progress(usize, usize, String),
+    /// Retry status update (attempt number, max attempts, operation description)
+    Retrying {
+        attempt: u32,
+        max_attempts: u32,
+        action: String,
+    },
     Connected,
     Error(String),
 }
@@ -1122,6 +1128,60 @@ fn select_account(
     }
 }
 
+/// Maximum number of retry attempts for IMAP operations
+const MAX_RETRIES: u32 = 3;
+/// Initial backoff delay in milliseconds (doubles with each retry)
+const INITIAL_BACKOFF_MS: u64 = 100;
+
+/// Retries an operation with exponential backoff
+/// Calls `on_retry` before each retry attempt with the attempt number
+fn retry_with_backoff<T, F, R>(mut operation: F, mut on_retry: R) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+    R: FnMut(u32),
+{
+    let mut last_error = None;
+
+    for attempt in 0..MAX_RETRIES {
+        match operation() {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < MAX_RETRIES - 1 {
+                    on_retry(attempt + 1);
+                    let backoff_ms = INITIAL_BACKOFF_MS * (1 << attempt);
+                    thread::sleep(Duration::from_millis(backoff_ms));
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
+/// Retries an operation with exponential backoff (silent version for worker threads)
+fn retry_silent<T, F>(mut operation: F) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+{
+    let mut last_error = None;
+
+    for attempt in 0..MAX_RETRIES {
+        match operation() {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < MAX_RETRIES - 1 {
+                    let backoff_ms = INITIAL_BACKOFF_MS * (1 << attempt);
+                    thread::sleep(Duration::from_millis(backoff_ms));
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
 /// Spawns the IMAP worker thread
 fn spawn_imap_worker(
     cmd_rx: mpsc::Receiver<ImapCommand>,
@@ -1145,15 +1205,35 @@ fn spawn_imap_worker(
                 ImapCommand::FetchInbox {
                     parallel_connections,
                 } => {
-                    // Get message counts first
-                    let inbox_count = match client.get_folder_count("INBOX") {
+                    // Get message counts first (with retry)
+                    let resp_tx_retry = resp_tx.clone();
+                    let inbox_count = match retry_with_backoff(
+                        || client.get_folder_count("INBOX"),
+                        |attempt| {
+                            let _ = resp_tx_retry.send(ImapResponse::Retrying {
+                                attempt,
+                                max_attempts: MAX_RETRIES,
+                                action: "fetch".to_string(),
+                            });
+                        },
+                    ) {
                         Ok(c) => c,
                         Err(e) => {
                             let _ = resp_tx.send(ImapResponse::Emails(Err(e)));
                             continue;
                         }
                     };
-                    let sent_count = match client.get_folder_count("[Gmail]/Sent Mail") {
+                    let resp_tx_retry = resp_tx.clone();
+                    let sent_count = match retry_with_backoff(
+                        || client.get_folder_count("[Gmail]/Sent Mail"),
+                        |attempt| {
+                            let _ = resp_tx_retry.send(ImapResponse::Retrying {
+                                attempt,
+                                max_attempts: MAX_RETRIES,
+                                action: "fetch".to_string(),
+                            });
+                        },
+                    ) {
                         Ok(c) => c,
                         Err(e) => {
                             let _ = resp_tx.send(ImapResponse::Emails(Err(e)));
@@ -1211,12 +1291,17 @@ fn spawn_imap_worker(
                             let password = account.app_password.clone();
                             let counter = Arc::clone(&fetched_count);
                             Some(thread::spawn(move || {
-                                let mut worker_client =
-                                    ImapClient::connect(&email_addr, &password)?;
-                                let emails =
-                                    worker_client.fetch_inbox_range(start, end, Some(&counter))?;
-                                let _ = worker_client.logout();
-                                Ok::<_, anyhow::Error>(emails)
+                                retry_silent(|| {
+                                    let mut worker_client =
+                                        ImapClient::connect(&email_addr, &password)?;
+                                    let emails = worker_client.fetch_inbox_range(
+                                        start,
+                                        end,
+                                        Some(&counter),
+                                    )?;
+                                    let _ = worker_client.logout();
+                                    Ok::<_, anyhow::Error>(emails)
+                                })
                             }))
                         })
                         .collect();
@@ -1239,12 +1324,17 @@ fn spawn_imap_worker(
                             let password = account.app_password.clone();
                             let counter = Arc::clone(&fetched_count);
                             Some(thread::spawn(move || {
-                                let mut worker_client =
-                                    ImapClient::connect(&email_addr, &password)?;
-                                let emails =
-                                    worker_client.fetch_sent_range(start, end, Some(&counter))?;
-                                let _ = worker_client.logout();
-                                Ok::<_, anyhow::Error>(emails)
+                                retry_silent(|| {
+                                    let mut worker_client =
+                                        ImapClient::connect(&email_addr, &password)?;
+                                    let emails = worker_client.fetch_sent_range(
+                                        start,
+                                        end,
+                                        Some(&counter),
+                                    )?;
+                                    let _ = worker_client.logout();
+                                    Ok::<_, anyhow::Error>(emails)
+                                })
                             }))
                         })
                         .collect();
@@ -1302,11 +1392,31 @@ fn spawn_imap_worker(
                     let _ = resp_tx.send(ImapResponse::Emails(result));
                 }
                 ImapCommand::ArchiveEmail(id, folder) => {
-                    let result = client.archive_email(&id, &folder);
+                    let resp_tx_retry = resp_tx.clone();
+                    let result = retry_with_backoff(
+                        || client.archive_email(&id, &folder),
+                        |attempt| {
+                            let _ = resp_tx_retry.send(ImapResponse::Retrying {
+                                attempt,
+                                max_attempts: MAX_RETRIES,
+                                action: "archive".to_string(),
+                            });
+                        },
+                    );
                     let _ = resp_tx.send(ImapResponse::ArchiveResult(result));
                 }
                 ImapCommand::DeleteEmail(id, folder) => {
-                    let result = client.delete_email(&id, &folder);
+                    let resp_tx_retry = resp_tx.clone();
+                    let result = retry_with_backoff(
+                        || client.delete_email(&id, &folder),
+                        |attempt| {
+                            let _ = resp_tx_retry.send(ImapResponse::Retrying {
+                                attempt,
+                                max_attempts: MAX_RETRIES,
+                                action: "delete".to_string(),
+                            });
+                        },
+                    );
                     let _ = resp_tx.send(ImapResponse::DeleteResult(result));
                 }
                 ImapCommand::ArchiveMultiple(ids_and_folders) => {
@@ -1334,7 +1444,18 @@ fn spawn_imap_worker(
                                 total,
                                 "Archiving".to_string(),
                             ));
-                            if let Err(e) = client.archive_batch(chunk, folder) {
+                            let resp_tx_retry = resp_tx.clone();
+                            let chunk_result = retry_with_backoff(
+                                || client.archive_batch(chunk, folder),
+                                |attempt| {
+                                    let _ = resp_tx_retry.send(ImapResponse::Retrying {
+                                        attempt,
+                                        max_attempts: MAX_RETRIES,
+                                        action: "archive".to_string(),
+                                    });
+                                },
+                            );
+                            if let Err(e) = chunk_result {
                                 result = Err(e);
                                 break 'outer;
                             }
@@ -1368,7 +1489,18 @@ fn spawn_imap_worker(
                                 total,
                                 "Deleting".to_string(),
                             ));
-                            if let Err(e) = client.delete_batch(chunk, folder) {
+                            let resp_tx_retry = resp_tx.clone();
+                            let chunk_result = retry_with_backoff(
+                                || client.delete_batch(chunk, folder),
+                                |attempt| {
+                                    let _ = resp_tx_retry.send(ImapResponse::Retrying {
+                                        attempt,
+                                        max_attempts: MAX_RETRIES,
+                                        action: "delete".to_string(),
+                                    });
+                                },
+                            );
+                            if let Err(e) = chunk_result {
                                 result = Err(e);
                                 break 'outer;
                             }
@@ -1389,13 +1521,24 @@ fn spawn_imap_worker(
                             total,
                             "Restoring".to_string(),
                         ));
-                        // Restore single email
+                        // Restore single email with retry
                         let single_restore = [(
                             message_id.clone(),
                             current_folder.clone(),
                             dest_folder.clone(),
                         )];
-                        if let Err(e) = client.restore_emails(&single_restore) {
+                        let resp_tx_retry = resp_tx.clone();
+                        let restore_result = retry_with_backoff(
+                            || client.restore_emails(&single_restore),
+                            |attempt| {
+                                let _ = resp_tx_retry.send(ImapResponse::Retrying {
+                                    attempt,
+                                    max_attempts: MAX_RETRIES,
+                                    action: "restore".to_string(),
+                                });
+                            },
+                        );
+                        if let Err(e) = restore_result {
                             result = Err(e);
                             break;
                         }
@@ -1579,6 +1722,16 @@ fn run_app(
                 }
                 ImapResponse::Progress(current, total, action) => {
                     ui_state.update_busy_message(format!("{} {} of {}...", action, current, total));
+                }
+                ImapResponse::Retrying {
+                    attempt,
+                    max_attempts,
+                    action,
+                } => {
+                    ui_state.update_busy_message(format!(
+                        "Retrying {} ({}/{})...",
+                        action, attempt, max_attempts
+                    ));
                 }
                 _ => {}
             }
