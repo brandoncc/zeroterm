@@ -1510,26 +1510,21 @@ fn spawn_imap_worker(
                     let _ = resp_tx.send(ImapResponse::MultiDeleteResult(result));
                 }
                 ImapCommand::RestoreEmails(restore_ops) => {
+                    const BATCH_SIZE: usize = 250;
+
                     let total = restore_ops.len();
                     let mut result = Ok(());
-                    for (i, (message_id, current_folder, dest_folder)) in
-                        restore_ops.iter().enumerate()
-                    {
-                        // Send progress update
+                    let mut processed = 0;
+
+                    for chunk in restore_ops.chunks(BATCH_SIZE) {
                         let _ = resp_tx.send(ImapResponse::Progress(
-                            i + 1,
+                            processed + chunk.len(),
                             total,
                             "Restoring".to_string(),
                         ));
-                        // Restore single email with retry
-                        let single_restore = [(
-                            message_id.clone(),
-                            current_folder.clone(),
-                            dest_folder.clone(),
-                        )];
                         let resp_tx_retry = resp_tx.clone();
-                        let restore_result = retry_with_backoff(
-                            || client.restore_emails(&single_restore),
+                        let chunk_result = retry_with_backoff(
+                            || client.restore_emails(chunk),
                             |attempt| {
                                 let _ = resp_tx_retry.send(ImapResponse::Retrying {
                                     attempt,
@@ -1538,10 +1533,11 @@ fn spawn_imap_worker(
                                 });
                             },
                         );
-                        if let Err(e) = restore_result {
+                        if let Err(e) = chunk_result {
                             result = Err(e);
                             break;
                         }
+                        processed += chunk.len();
                     }
                     let _ = resp_tx.send(ImapResponse::RestoreResult(result));
                 }

@@ -262,23 +262,25 @@ impl EmailClient for ImapClient {
         use std::collections::HashMap;
 
         // Group emails by current folder to minimize folder switches
-        let mut by_folder: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+        let mut by_current_folder: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
         for (message_id, current_folder, dest_folder) in emails {
-            by_folder
+            by_current_folder
                 .entry(current_folder.as_str())
                 .or_default()
                 .push((message_id.as_str(), dest_folder.as_str()));
         }
 
-        // Process each group
-        for (current_folder, moves) in by_folder {
+        // Process each current folder group
+        for (current_folder, moves) in by_current_folder {
             self.session
                 .select(current_folder)
                 .context(format!("Failed to select {}", current_folder))?;
 
+            // First pass: search for all Message-IDs to get their current UIDs
+            // Group by destination folder for batch moves
+            let mut by_dest_folder: HashMap<&str, Vec<u32>> = HashMap::new();
+
             for (message_id, dest_folder) in moves {
-                // Search for the email by Message-ID to get its current UID
-                // Gmail assigns new UIDs when emails move folders
                 let search_query = format!("HEADER Message-ID {}", message_id);
                 let uids = self
                     .session
@@ -286,15 +288,27 @@ impl EmailClient for ImapClient {
                     .context(format!("Failed to search for Message-ID {}", message_id))?;
 
                 if let Some(uid) = uids.into_iter().next() {
-                    self.session
-                        .uid_mv(uid.to_string(), dest_folder)
-                        .context(format!(
-                            "Failed to restore email {} to {}",
-                            message_id, dest_folder
-                        ))?;
+                    by_dest_folder.entry(dest_folder).or_default().push(uid);
                 }
                 // If email not found, it may have been permanently deleted or already moved
                 // Continue with other emails rather than failing entirely
+            }
+
+            // Second pass: batch move UIDs to each destination folder
+            for (dest_folder, uids) in by_dest_folder {
+                if uids.is_empty() {
+                    continue;
+                }
+
+                let uid_sequence = uids
+                    .iter()
+                    .map(|u| u.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+
+                self.session
+                    .uid_mv(&uid_sequence, dest_folder)
+                    .context(format!("Failed to restore emails to {}", dest_folder))?;
             }
         }
 
