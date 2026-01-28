@@ -62,7 +62,70 @@ enum ImapResponse {
     Error(String),
 }
 
+fn print_help() {
+    println!(
+        "\
+zeroterm {}
+Terminal-based email client for achieving inbox zero
+
+USAGE:
+    zeroterm [OPTIONS]
+
+OPTIONS:
+    -h, --help       Print help information
+    -V, --version    Print version information
+        --demo       Run in demo mode with fake data
+        --debug      Enable debug logging
+
+NAVIGATION:
+    j/k              Move down/up in lists
+    Enter            Select group or email / expand thread
+    Backspace        Go back to previous view
+    Tab              Toggle between email and domain grouping
+    /                Search emails
+    n/N              Next/previous search result
+    q                Quit
+
+ACTIONS:
+    a                Archive email (in group/email view)
+    d                Delete email (in group/email view)
+    A                Archive all emails from sender (with confirmation)
+    D                Delete all emails from sender (with confirmation)
+    u                Undo last action
+
+CONFIG:
+    Configuration file location: ~/.config/zeroterm/config.toml
+
+    Example config:
+        # Global options (all optional)
+        protect_threads = true       # Require confirmation for bulk actions (default: true)
+        parallel_connections = 5     # IMAP connections for loading (default: 5)
+        debug = false                # Enable debug logging (default: false)
+
+        [accounts.personal]
+        backend = \"gmail\"
+        email = \"your.email@gmail.com\"
+        app_password = \"xxxx xxxx xxxx xxxx\"
+
+    The app_password can be a plain string or a 1Password reference (op://vault/item/field).
+    Create an App Password at: https://myaccount.google.com/apppasswords",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 fn main() -> Result<()> {
+    // Check for help flag
+    if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
+        print_help();
+        return Ok(());
+    }
+
+    // Check for version flag
+    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
+        println!("zeroterm {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Check for demo mode
     let demo_mode = std::env::args().any(|arg| arg == "--demo");
     let debug_flag = std::env::args().any(|arg| arg == "--debug");
