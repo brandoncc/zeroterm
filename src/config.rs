@@ -34,6 +34,10 @@ fn default_parallel_connections() -> usize {
     5
 }
 
+fn default_debug() -> bool {
+    false
+}
+
 /// Top-level configuration containing all accounts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -45,6 +49,9 @@ pub struct Config {
     /// Number of parallel IMAP connections for loading (default: 5)
     #[serde(default = "default_parallel_connections")]
     pub parallel_connections: usize,
+    /// Enable debug logging to ~/.config/zeroterm/debug.log (default: false)
+    #[serde(default = "default_debug")]
+    pub debug: bool,
 }
 
 /// Returns the configuration directory path
@@ -139,6 +146,7 @@ pub fn load_config_with_resolver(resolver: &impl SecretResolver) -> Result<Confi
         accounts: resolved_accounts,
         protect_threads: config.protect_threads,
         parallel_connections: config.parallel_connections,
+        debug: config.debug,
     })
 }
 
@@ -238,6 +246,32 @@ app_password = "xxxx"
 "#;
         let config: Config = toml::from_str(toml_content).unwrap();
         assert_eq!(config.parallel_connections, 10);
+    }
+
+    #[test]
+    fn test_debug_defaults_to_false() {
+        let toml_content = r#"
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert!(!config.debug);
+    }
+
+    #[test]
+    fn test_debug_can_be_enabled() {
+        let toml_content = r#"
+debug = true
+
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert!(config.debug);
     }
 
     #[test]
