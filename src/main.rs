@@ -1,5 +1,7 @@
 mod app;
 mod config;
+#[macro_use]
+mod debug;
 mod demo;
 mod email;
 mod imap_client;
@@ -63,8 +65,11 @@ enum ImapResponse {
 fn main() -> Result<()> {
     // Check for demo mode
     let demo_mode = std::env::args().any(|arg| arg == "--demo");
+    let debug_flag = std::env::args().any(|arg| arg == "--debug");
 
     if demo_mode {
+        // Initialize debug logging for demo mode too
+        debug::init(debug_flag);
         return run_demo_mode();
     }
 
@@ -89,6 +94,10 @@ fn main() -> Result<()> {
 
     // Load config
     let cfg = config::load_config()?;
+
+    // Initialize debug logging (--debug flag overrides config)
+    debug::init(debug_flag || cfg.debug);
+    debug_log!("Zeroterm starting up");
 
     // Set up terminal
     enable_raw_mode()?;
@@ -1146,10 +1155,17 @@ where
         match operation() {
             Ok(result) => return Ok(result),
             Err(e) => {
+                debug_log!(
+                    "Operation failed (attempt {}/{}): {}",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e
+                );
                 last_error = Some(e);
                 if attempt < MAX_RETRIES - 1 {
                     on_retry(attempt + 1);
                     let backoff_ms = INITIAL_BACKOFF_MS * (1 << attempt);
+                    debug_log!("Retrying after {}ms backoff", backoff_ms);
                     thread::sleep(Duration::from_millis(backoff_ms));
                 }
             }
@@ -1189,9 +1205,14 @@ fn spawn_imap_worker(
     account: AccountConfig,
 ) {
     thread::spawn(move || {
+        debug_log!("IMAP worker: connecting to {}", account.email);
         let mut client = match ImapClient::connect(&account.email, &account.app_password) {
-            Ok(c) => c,
+            Ok(c) => {
+                debug_log!("IMAP worker: connected successfully");
+                c
+            }
             Err(e) => {
+                debug_log!("IMAP worker: connection failed: {}", e);
                 let _ = resp_tx.send(ImapResponse::Error(format!("Failed to connect: {}", e)));
                 return;
             }
@@ -1205,6 +1226,12 @@ fn spawn_imap_worker(
                 ImapCommand::FetchInbox {
                     parallel_connections,
                 } => {
+                    debug_log!(
+                        "FetchInbox: starting with {} parallel connections",
+                        parallel_connections
+                    );
+                    let fetch_start = Instant::now();
+
                     // Get message counts first (with retry)
                     let resp_tx_retry = resp_tx.clone();
                     let inbox_count = match retry_with_backoff(
@@ -1242,9 +1269,16 @@ fn spawn_imap_worker(
                     };
 
                     let total = (inbox_count + sent_count) as usize;
+                    debug_log!(
+                        "FetchInbox: found {} inbox + {} sent = {} total emails",
+                        inbox_count,
+                        sent_count,
+                        total
+                    );
 
                     // If mailbox is empty or small, use sequential fetch
                     if total == 0 {
+                        debug_log!("FetchInbox: no emails to fetch");
                         let _ = resp_tx.send(ImapResponse::Emails(Ok(Vec::new())));
                         continue;
                     }
@@ -1381,17 +1415,25 @@ fn spawn_imap_worker(
                     let _ = progress_handle.join();
 
                     let result = if let Some(e) = error {
+                        debug_log!("FetchInbox: failed with error: {}", e);
                         Err(e)
                     } else {
                         // Dedupe and build thread IDs
                         email::dedupe_emails(&mut all_emails);
                         email::build_thread_ids(&mut all_emails);
+                        debug_log!(
+                            "FetchInbox: completed in {:.2}s, fetched {} emails",
+                            fetch_start.elapsed().as_secs_f64(),
+                            all_emails.len()
+                        );
                         Ok(all_emails)
                     };
 
                     let _ = resp_tx.send(ImapResponse::Emails(result));
                 }
                 ImapCommand::ArchiveEmail(id, folder) => {
+                    debug_log!("ArchiveEmail: archiving uid {} from {}", id, folder);
+                    let start = Instant::now();
                     let resp_tx_retry = resp_tx.clone();
                     let result = retry_with_backoff(
                         || client.archive_email(&id, &folder),
@@ -1403,9 +1445,16 @@ fn spawn_imap_worker(
                             });
                         },
                     );
+                    debug_log!(
+                        "ArchiveEmail: completed in {:.3}s ({})",
+                        start.elapsed().as_secs_f64(),
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     let _ = resp_tx.send(ImapResponse::ArchiveResult(result));
                 }
                 ImapCommand::DeleteEmail(id, folder) => {
+                    debug_log!("DeleteEmail: deleting uid {} from {}", id, folder);
+                    let start = Instant::now();
                     let resp_tx_retry = resp_tx.clone();
                     let result = retry_with_backoff(
                         || client.delete_email(&id, &folder),
@@ -1417,6 +1466,11 @@ fn spawn_imap_worker(
                             });
                         },
                     );
+                    debug_log!(
+                        "DeleteEmail: completed in {:.3}s ({})",
+                        start.elapsed().as_secs_f64(),
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     let _ = resp_tx.send(ImapResponse::DeleteResult(result));
                 }
                 ImapCommand::ArchiveMultiple(ids_and_folders) => {
@@ -1424,6 +1478,12 @@ fn spawn_imap_worker(
                     const BATCH_SIZE: usize = 250;
 
                     let total = ids_and_folders.len();
+                    debug_log!(
+                        "ArchiveMultiple: archiving {} emails in batches of {}",
+                        total,
+                        BATCH_SIZE
+                    );
+                    let archive_start = Instant::now();
 
                     // Group by folder
                     let mut by_folder: HashMap<&str, Vec<String>> = HashMap::new();
@@ -1433,12 +1493,30 @@ fn spawn_imap_worker(
                             .or_default()
                             .push(uid.clone());
                     }
+                    debug_log!(
+                        "ArchiveMultiple: grouped into {} source folders",
+                        by_folder.len()
+                    );
 
                     let mut result = Ok(());
                     let mut processed = 0;
 
                     'outer: for (folder, uids) in by_folder {
-                        for chunk in uids.chunks(BATCH_SIZE) {
+                        debug_log!(
+                            "ArchiveMultiple: processing {} emails from '{}'",
+                            uids.len(),
+                            folder
+                        );
+                        for (batch_num, chunk) in uids.chunks(BATCH_SIZE).enumerate() {
+                            debug_log!(
+                                "ArchiveMultiple: batch {} ({} emails, {}/{} total)",
+                                batch_num + 1,
+                                chunk.len(),
+                                processed + chunk.len(),
+                                total
+                            );
+                            let batch_start = Instant::now();
+
                             let _ = resp_tx.send(ImapResponse::Progress(
                                 processed + chunk.len(),
                                 total,
@@ -1455,13 +1533,25 @@ fn spawn_imap_worker(
                                     });
                                 },
                             );
+                            debug_log!(
+                                "ArchiveMultiple: batch {} completed in {:.3}s",
+                                batch_num + 1,
+                                batch_start.elapsed().as_secs_f64()
+                            );
                             if let Err(e) = chunk_result {
+                                debug_log!("ArchiveMultiple: batch failed: {}", e);
                                 result = Err(e);
                                 break 'outer;
                             }
                             processed += chunk.len();
                         }
                     }
+                    debug_log!(
+                        "ArchiveMultiple: finished archiving {} emails in {:.2}s ({})",
+                        processed,
+                        archive_start.elapsed().as_secs_f64(),
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     let _ = resp_tx.send(ImapResponse::MultiArchiveResult(result));
                 }
                 ImapCommand::DeleteMultiple(ids_and_folders) => {
@@ -1469,6 +1559,12 @@ fn spawn_imap_worker(
                     const BATCH_SIZE: usize = 250;
 
                     let total = ids_and_folders.len();
+                    debug_log!(
+                        "DeleteMultiple: deleting {} emails in batches of {}",
+                        total,
+                        BATCH_SIZE
+                    );
+                    let delete_start = Instant::now();
 
                     // Group by folder
                     let mut by_folder: HashMap<&str, Vec<String>> = HashMap::new();
@@ -1478,12 +1574,30 @@ fn spawn_imap_worker(
                             .or_default()
                             .push(uid.clone());
                     }
+                    debug_log!(
+                        "DeleteMultiple: grouped into {} source folders",
+                        by_folder.len()
+                    );
 
                     let mut result = Ok(());
                     let mut processed = 0;
 
                     'outer: for (folder, uids) in by_folder {
-                        for chunk in uids.chunks(BATCH_SIZE) {
+                        debug_log!(
+                            "DeleteMultiple: processing {} emails from '{}'",
+                            uids.len(),
+                            folder
+                        );
+                        for (batch_num, chunk) in uids.chunks(BATCH_SIZE).enumerate() {
+                            debug_log!(
+                                "DeleteMultiple: batch {} ({} emails, {}/{} total)",
+                                batch_num + 1,
+                                chunk.len(),
+                                processed + chunk.len(),
+                                total
+                            );
+                            let batch_start = Instant::now();
+
                             let _ = resp_tx.send(ImapResponse::Progress(
                                 processed + chunk.len(),
                                 total,
@@ -1500,23 +1614,50 @@ fn spawn_imap_worker(
                                     });
                                 },
                             );
+                            debug_log!(
+                                "DeleteMultiple: batch {} completed in {:.3}s",
+                                batch_num + 1,
+                                batch_start.elapsed().as_secs_f64()
+                            );
                             if let Err(e) = chunk_result {
+                                debug_log!("DeleteMultiple: batch failed: {}", e);
                                 result = Err(e);
                                 break 'outer;
                             }
                             processed += chunk.len();
                         }
                     }
+                    debug_log!(
+                        "DeleteMultiple: finished deleting {} emails in {:.2}s ({})",
+                        processed,
+                        delete_start.elapsed().as_secs_f64(),
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     let _ = resp_tx.send(ImapResponse::MultiDeleteResult(result));
                 }
                 ImapCommand::RestoreEmails(restore_ops) => {
                     const BATCH_SIZE: usize = 250;
 
                     let total = restore_ops.len();
+                    debug_log!(
+                        "RestoreEmails: starting restore of {} emails in batches of {}",
+                        total,
+                        BATCH_SIZE
+                    );
                     let mut result = Ok(());
                     let mut processed = 0;
+                    let restore_start = Instant::now();
 
-                    for chunk in restore_ops.chunks(BATCH_SIZE) {
+                    for (batch_num, chunk) in restore_ops.chunks(BATCH_SIZE).enumerate() {
+                        debug_log!(
+                            "RestoreEmails: processing batch {} ({} emails, {}/{} total)",
+                            batch_num + 1,
+                            chunk.len(),
+                            processed + chunk.len(),
+                            total
+                        );
+                        let batch_start = Instant::now();
+
                         let _ = resp_tx.send(ImapResponse::Progress(
                             processed + chunk.len(),
                             total,
@@ -1534,14 +1675,27 @@ fn spawn_imap_worker(
                             },
                         );
                         if let Err(e) = chunk_result {
+                            debug_log!("RestoreEmails: batch {} failed: {}", batch_num + 1, e);
                             result = Err(e);
                             break;
                         }
+                        debug_log!(
+                            "RestoreEmails: batch {} completed in {:.2}s",
+                            batch_num + 1,
+                            batch_start.elapsed().as_secs_f64()
+                        );
                         processed += chunk.len();
                     }
+                    debug_log!(
+                        "RestoreEmails: finished restoring {} emails in {:.2}s (result: {})",
+                        processed,
+                        restore_start.elapsed().as_secs_f64(),
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     let _ = resp_tx.send(ImapResponse::RestoreResult(result));
                 }
                 ImapCommand::Shutdown => {
+                    debug_log!("IMAP worker: shutdown requested");
                     break;
                 }
             }
@@ -1626,15 +1780,26 @@ fn run_app(
             match response {
                 ImapResponse::Emails(result) => match result {
                     Ok(emails) => {
+                        let email_count = emails.len();
                         app.set_emails(emails);
+                        debug_log!(
+                            "UI: loaded {} emails into {} groups",
+                            email_count,
+                            app.groups.len()
+                        );
                         ui_state.clear_busy();
                     }
                     Err(e) => {
+                        debug_log!("UI: email fetch failed: {}", e);
                         ui_state.clear_busy();
                         ui_state.set_status(format!("Error: {}", e));
                     }
                 },
                 ImapResponse::ArchiveResult(result) => {
+                    debug_log!(
+                        "UI: archive result: {}",
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     if let Some(PendingOp::ArchiveSingle(id)) = pending_operation.take()
                         && result.is_ok()
                     {
@@ -1643,6 +1808,10 @@ fn run_app(
                     ui_state.clear_busy();
                 }
                 ImapResponse::DeleteResult(result) => {
+                    debug_log!(
+                        "UI: delete result: {}",
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     if let Some(PendingOp::DeleteSingle(id)) = pending_operation.take()
                         && result.is_ok()
                     {
@@ -1651,6 +1820,10 @@ fn run_app(
                     ui_state.clear_busy();
                 }
                 ImapResponse::MultiArchiveResult(result) => {
+                    debug_log!(
+                        "UI: multi-archive result: {}",
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     if let Some(op) = pending_operation.take()
                         && result.is_ok()
                     {
@@ -1673,6 +1846,10 @@ fn run_app(
                     ui_state.clear_busy();
                 }
                 ImapResponse::MultiDeleteResult(result) => {
+                    debug_log!(
+                        "UI: multi-delete result: {}",
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     if let Some(op) = pending_operation.take()
                         && result.is_ok()
                     {
@@ -1695,9 +1872,14 @@ fn run_app(
                     ui_state.clear_busy();
                 }
                 ImapResponse::RestoreResult(result) => {
+                    debug_log!(
+                        "UI: restore result: {}",
+                        if result.is_ok() { "success" } else { "failed" }
+                    );
                     if let Some(PendingOp::Undo(index)) = pending_operation.take() {
                         match result {
                             Ok(()) => {
+                                debug_log!("UI: undo successful, refreshing emails");
                                 // Remove the entry from history
                                 app.pop_undo(index);
                                 // Stay in undo view - user can close it manually with Escape
@@ -1708,6 +1890,7 @@ fn run_app(
                                 });
                             }
                             Err(e) => {
+                                debug_log!("UI: undo failed: {}", e);
                                 ui_state.clear_busy();
                                 ui_state.set_status(format!("Undo failed: {}", e));
                             }
@@ -2323,6 +2506,7 @@ fn handle_confirmed_action(
     pending_operation: &mut Option<PendingOp>,
     action: ConfirmAction,
 ) -> Result<()> {
+    debug_log!("UI: confirmed action: {:?}", action);
     match action {
         ConfirmAction::ArchiveEmails { sender, .. } => {
             // Archive only this sender's emails (not full threads)

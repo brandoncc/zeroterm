@@ -36,14 +36,17 @@ pub struct ImapClient {
 impl ImapClient {
     /// Creates a new IMAP client and connects to Gmail
     pub fn connect(email: &str, password: &str) -> Result<Self> {
+        crate::debug_log!("ImapClient::connect: connecting to imap.gmail.com:993");
         let client = imap::ClientBuilder::new("imap.gmail.com", 993)
             .connect()
             .context("Failed to connect to IMAP server")?;
 
+        crate::debug_log!("ImapClient::connect: logging in as {}", email);
         let session = client
             .login(email, password)
             .map_err(|e| anyhow::anyhow!("Login failed: {}", e.0))?;
 
+        crate::debug_log!("ImapClient::connect: login successful");
         Ok(Self { session })
     }
 
@@ -229,6 +232,12 @@ impl EmailClient for ImapClient {
             return Ok(());
         }
 
+        crate::debug_log!(
+            "archive_batch: archiving {} emails from '{}'",
+            uids.len(),
+            folder
+        );
+
         self.session
             .select(folder)
             .context(format!("Failed to select {}", folder))?;
@@ -238,6 +247,7 @@ impl EmailClient for ImapClient {
             .uid_mv(&uid_sequence, "[Gmail]/All Mail")
             .context("Failed to archive emails")?;
 
+        crate::debug_log!("archive_batch: done");
         Ok(())
     }
 
@@ -245,6 +255,12 @@ impl EmailClient for ImapClient {
         if uids.is_empty() {
             return Ok(());
         }
+
+        crate::debug_log!(
+            "delete_batch: deleting {} emails from '{}'",
+            uids.len(),
+            folder
+        );
 
         self.session
             .select(folder)
@@ -255,11 +271,15 @@ impl EmailClient for ImapClient {
             .uid_mv(&uid_sequence, "[Gmail]/Trash")
             .context("Failed to delete emails")?;
 
+        crate::debug_log!("delete_batch: done");
         Ok(())
     }
 
     fn restore_emails(&mut self, emails: &[(String, String, String)]) -> Result<()> {
         use std::collections::HashMap;
+        use std::time::Instant;
+
+        crate::debug_log!("restore_emails: processing {} emails", emails.len());
 
         // Group emails by current folder to minimize folder switches
         let mut by_current_folder: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
@@ -270,18 +290,43 @@ impl EmailClient for ImapClient {
                 .push((message_id.as_str(), dest_folder.as_str()));
         }
 
+        crate::debug_log!(
+            "restore_emails: grouped into {} source folders",
+            by_current_folder.len()
+        );
+
         // Process each current folder group
         for (current_folder, moves) in by_current_folder {
+            crate::debug_log!(
+                "restore_emails: selecting folder '{}' ({} emails to search)",
+                current_folder,
+                moves.len()
+            );
+            let select_start = Instant::now();
             self.session
                 .select(current_folder)
                 .context(format!("Failed to select {}", current_folder))?;
+            crate::debug_log!(
+                "restore_emails: folder selected in {:.3}s",
+                select_start.elapsed().as_secs_f64()
+            );
 
             // First pass: search for all Message-IDs to get their current UIDs
             // Group by destination folder for batch moves
             let mut by_dest_folder: HashMap<&str, Vec<u32>> = HashMap::new();
 
-            for (message_id, dest_folder) in moves {
+            let search_start = Instant::now();
+            let mut found_count = 0;
+            for (i, (message_id, dest_folder)) in moves.iter().enumerate() {
                 let search_query = format!("HEADER Message-ID {}", message_id);
+                if i % 50 == 0 {
+                    crate::debug_log!(
+                        "restore_emails: searching for email {}/{} ({:.2}s elapsed)",
+                        i + 1,
+                        moves.len(),
+                        search_start.elapsed().as_secs_f64()
+                    );
+                }
                 let uids = self
                     .session
                     .uid_search(&search_query)
@@ -289,16 +334,30 @@ impl EmailClient for ImapClient {
 
                 if let Some(uid) = uids.into_iter().next() {
                     by_dest_folder.entry(dest_folder).or_default().push(uid);
+                    found_count += 1;
                 }
                 // If email not found, it may have been permanently deleted or already moved
                 // Continue with other emails rather than failing entirely
             }
+            crate::debug_log!(
+                "restore_emails: search complete - found {}/{} emails in {:.2}s",
+                found_count,
+                moves.len(),
+                search_start.elapsed().as_secs_f64()
+            );
 
             // Second pass: batch move UIDs to each destination folder
             for (dest_folder, uids) in by_dest_folder {
                 if uids.is_empty() {
                     continue;
                 }
+
+                crate::debug_log!(
+                    "restore_emails: moving {} emails to '{}'",
+                    uids.len(),
+                    dest_folder
+                );
+                let move_start = Instant::now();
 
                 let uid_sequence = uids
                     .iter()
@@ -309,9 +368,15 @@ impl EmailClient for ImapClient {
                 self.session
                     .uid_mv(&uid_sequence, dest_folder)
                     .context(format!("Failed to restore emails to {}", dest_folder))?;
+
+                crate::debug_log!(
+                    "restore_emails: move completed in {:.3}s",
+                    move_start.elapsed().as_secs_f64()
+                );
             }
         }
 
+        crate::debug_log!("restore_emails: done");
         Ok(())
     }
 }
