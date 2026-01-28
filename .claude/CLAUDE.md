@@ -50,4 +50,4 @@ src/
   - `cargo fmt` - formatter
   - `cargo clippy --all-targets --all-features -- -D warnings` - linter
   - `cargo test` - tests
-- Before making a PR, bump the version using semver
+- Before making a PR, bump the version using semver (commit both Cargo.toml and Cargo.lock together)
