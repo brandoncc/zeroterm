@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Represents an email message
 #[derive(Debug, Clone, PartialEq)]
@@ -130,6 +130,13 @@ pub fn extract_email(from: &str) -> String {
 /// malformed addresses together.
 pub fn extract_domain(email: &str) -> String {
     email.split('@').nth(1).unwrap_or(email).to_string()
+}
+
+/// Removes duplicate emails by (id, source_folder) pair, keeping the first occurrence.
+/// This handles race conditions during parallel fetching where sequence numbers may shift.
+pub fn dedupe_emails(emails: &mut Vec<Email>) {
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    emails.retain(|email| seen.insert((email.id.clone(), email.source_folder.clone())));
 }
 
 /// Builds thread IDs for a collection of emails using Message-ID, In-Reply-To, and References headers.
@@ -549,5 +556,68 @@ mod tests {
         build_thread_ids(&mut emails);
         // Should be in same thread because they share a common reference
         assert_eq!(emails[0].thread_id, emails[1].thread_id);
+    }
+
+    #[test]
+    fn test_dedupe_emails_removes_duplicates() {
+        let date = Utc::now();
+        let mut emails = vec![
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Subject 1")
+                .snippet("Snippet 1")
+                .date(date)
+                .source_folder("INBOX")
+                .build(),
+            EmailBuilder::new()
+                .id("2")
+                .from("bob@example.com")
+                .subject("Subject 2")
+                .snippet("Snippet 2")
+                .date(date)
+                .source_folder("INBOX")
+                .build(),
+            EmailBuilder::new()
+                .id("1") // Duplicate UID
+                .from("alice@example.com")
+                .subject("Subject 1")
+                .snippet("Snippet 1")
+                .date(date)
+                .source_folder("INBOX")
+                .build(),
+        ];
+
+        dedupe_emails(&mut emails);
+        assert_eq!(emails.len(), 2);
+        assert_eq!(emails[0].id, "1");
+        assert_eq!(emails[1].id, "2");
+    }
+
+    #[test]
+    fn test_dedupe_emails_keeps_same_uid_different_folder() {
+        let date = Utc::now();
+        let mut emails = vec![
+            EmailBuilder::new()
+                .id("1")
+                .from("alice@example.com")
+                .subject("Subject 1")
+                .snippet("Snippet 1")
+                .date(date)
+                .source_folder("INBOX")
+                .build(),
+            EmailBuilder::new()
+                .id("1") // Same UID but different folder
+                .from("alice@example.com")
+                .subject("Subject 1")
+                .snippet("Snippet 1")
+                .date(date)
+                .source_folder("[Gmail]/Sent Mail")
+                .build(),
+        ];
+
+        dedupe_emails(&mut emails);
+        // Both should remain since they're from different folders
+        assert_eq!(emails.len(), 2);
     }
 }

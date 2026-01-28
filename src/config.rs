@@ -30,6 +30,10 @@ fn default_protect_threads() -> bool {
     true
 }
 
+fn default_parallel_connections() -> usize {
+    5
+}
+
 /// Top-level configuration containing all accounts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -38,6 +42,9 @@ pub struct Config {
     /// When true, archive/delete only work in thread view (default: true)
     #[serde(default = "default_protect_threads")]
     pub protect_threads: bool,
+    /// Number of parallel IMAP connections for loading (default: 5)
+    #[serde(default = "default_parallel_connections")]
+    pub parallel_connections: usize,
 }
 
 /// Returns the configuration directory path
@@ -131,6 +138,7 @@ pub fn load_config_with_resolver(resolver: &impl SecretResolver) -> Result<Confi
     Ok(Config {
         accounts: resolved_accounts,
         protect_threads: config.protect_threads,
+        parallel_connections: config.parallel_connections,
     })
 }
 
@@ -204,6 +212,32 @@ app_password = "xxxx"
 "#;
         let config: Config = toml::from_str(toml_content).unwrap();
         assert!(!config.protect_threads);
+    }
+
+    #[test]
+    fn test_parallel_connections_defaults_to_5() {
+        let toml_content = r#"
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert_eq!(config.parallel_connections, 5);
+    }
+
+    #[test]
+    fn test_parallel_connections_can_be_configured() {
+        let toml_content = r#"
+parallel_connections = 10
+
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert_eq!(config.parallel_connections, 10);
     }
 
     #[test]
