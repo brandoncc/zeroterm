@@ -277,106 +277,44 @@ impl EmailClient for ImapClient {
 
     fn restore_emails(&mut self, emails: &[(String, String, String)]) -> Result<()> {
         use std::collections::HashMap;
-        use std::time::Instant;
-
-        crate::debug_log!("restore_emails: processing {} emails", emails.len());
 
         // Group emails by current folder to minimize folder switches
-        let mut by_current_folder: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+        let mut by_folder: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
         for (message_id, current_folder, dest_folder) in emails {
-            by_current_folder
+            by_folder
                 .entry(current_folder.as_str())
                 .or_default()
                 .push((message_id.as_str(), dest_folder.as_str()));
         }
 
-        crate::debug_log!(
-            "restore_emails: grouped into {} source folders",
-            by_current_folder.len()
-        );
-
-        // Process each current folder group
-        for (current_folder, moves) in by_current_folder {
-            crate::debug_log!(
-                "restore_emails: selecting folder '{}' ({} emails to search)",
-                current_folder,
-                moves.len()
-            );
-            let select_start = Instant::now();
+        // Process each group
+        for (current_folder, moves) in by_folder {
             self.session
                 .select(current_folder)
                 .context(format!("Failed to select {}", current_folder))?;
-            crate::debug_log!(
-                "restore_emails: folder selected in {:.3}s",
-                select_start.elapsed().as_secs_f64()
-            );
 
-            // First pass: search for all Message-IDs to get their current UIDs
-            // Group by destination folder for batch moves
-            let mut by_dest_folder: HashMap<&str, Vec<u32>> = HashMap::new();
-
-            let search_start = Instant::now();
-            let mut found_count = 0;
-            for (i, (message_id, dest_folder)) in moves.iter().enumerate() {
+            for (message_id, dest_folder) in moves {
+                // Search for the email by Message-ID to get its current UID
+                // Gmail assigns new UIDs when emails move folders
                 let search_query = format!("HEADER Message-ID {}", message_id);
-                if i % 50 == 0 {
-                    crate::debug_log!(
-                        "restore_emails: searching for email {}/{} ({:.2}s elapsed)",
-                        i + 1,
-                        moves.len(),
-                        search_start.elapsed().as_secs_f64()
-                    );
-                }
                 let uids = self
                     .session
                     .uid_search(&search_query)
                     .context(format!("Failed to search for Message-ID {}", message_id))?;
 
                 if let Some(uid) = uids.into_iter().next() {
-                    by_dest_folder.entry(dest_folder).or_default().push(uid);
-                    found_count += 1;
+                    self.session
+                        .uid_mv(uid.to_string(), dest_folder)
+                        .context(format!(
+                            "Failed to restore email {} to {}",
+                            message_id, dest_folder
+                        ))?;
                 }
                 // If email not found, it may have been permanently deleted or already moved
                 // Continue with other emails rather than failing entirely
             }
-            crate::debug_log!(
-                "restore_emails: search complete - found {}/{} emails in {:.2}s",
-                found_count,
-                moves.len(),
-                search_start.elapsed().as_secs_f64()
-            );
-
-            // Second pass: batch move UIDs to each destination folder
-            for (dest_folder, uids) in by_dest_folder {
-                if uids.is_empty() {
-                    continue;
-                }
-
-                crate::debug_log!(
-                    "restore_emails: moving {} emails to '{}'",
-                    uids.len(),
-                    dest_folder
-                );
-                let move_start = Instant::now();
-
-                let uid_sequence = uids
-                    .iter()
-                    .map(|u| u.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-
-                self.session
-                    .uid_mv(&uid_sequence, dest_folder)
-                    .context(format!("Failed to restore emails to {}", dest_folder))?;
-
-                crate::debug_log!(
-                    "restore_emails: move completed in {:.3}s",
-                    move_start.elapsed().as_secs_f64()
-                );
-            }
         }
 
-        crate::debug_log!("restore_emails: done");
         Ok(())
     }
 }
