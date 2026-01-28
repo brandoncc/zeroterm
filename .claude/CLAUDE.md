@@ -44,6 +44,16 @@ src/
 - Mock Gmail client via `mockall` crate for API tests
 - 43 unit tests covering grouping, navigation, thread handling
 
+## Sensitive Data
+
+The user's config file at `~/.config/zeroterm/config.toml` contains passwords and email addresses. **Never read the entire config file.**
+
+When debugging config issues:
+- Use `grep -n 'setting_name' ~/.config/zeroterm/config.toml` to check specific non-sensitive settings
+- Use `grep -n '^\[' ~/.config/zeroterm/config.toml` to see section structure
+- To check if a password exists (without revealing it): `grep -c 'app_password' ~/.config/zeroterm/config.toml`
+- To check if an email exists (without revealing it): `grep -c 'email =' ~/.config/zeroterm/config.toml`
+
 ## Development Workflow
 
 - Before making any commit, run the linter, formatter, and tests:
