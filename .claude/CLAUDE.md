@@ -61,3 +61,6 @@ When debugging config issues:
   - `cargo clippy --all-targets --all-features -- -D warnings` - linter
   - `cargo test` - tests
 - Before making a PR, bump the version using semver (commit both Cargo.toml and Cargo.lock together)
+- When adding or changing CLI flags, keybindings, or config options, update both:
+  - `README.md` - user-facing documentation
+  - `print_help()` in `src/main.rs` - the `--help` output
