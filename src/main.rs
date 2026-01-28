@@ -7,6 +7,7 @@ mod email;
 mod imap_client;
 mod ui;
 
+use std::collections::HashMap;
 use std::io;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,22 +34,30 @@ use ui::widgets::{AccountSelection, ConfirmAction, UiState, WARNING_CHAR};
 
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
-    FetchInbox { parallel_connections: usize },
-    ArchiveEmail(String, String),                 // (uid, folder)
-    DeleteEmail(String, String),                  // (uid, folder)
-    ArchiveMultiple(Vec<(String, String)>),       // Vec<(uid, folder)>
-    DeleteMultiple(Vec<(String, String)>),        // Vec<(uid, folder)>
-    RestoreEmails(Vec<(String, String, String)>), // Vec<(uid, current_folder, dest_folder)>
+    FetchInbox {
+        parallel_connections: usize,
+    },
+    ArchiveEmail(String, String),           // (uid, folder)
+    DeleteEmail(String, String),            // (uid, folder)
+    ArchiveMultiple(Vec<(String, String)>), // Vec<(uid, folder)>
+    DeleteMultiple(Vec<(String, String)>),  // Vec<(uid, folder)>
+    /// Vec<(message_id, dest_uid, current_folder, dest_folder)>
+    /// dest_uid is used for fast restore if available, falls back to Message-ID search
+    RestoreEmails(Vec<(Option<String>, Option<u32>, String, String)>),
     Shutdown,
 }
 
 /// Responses from the IMAP worker thread
 enum ImapResponse {
     Emails(Result<Vec<Email>>),
-    ArchiveResult(Result<()>),
-    DeleteResult(Result<()>),
-    MultiArchiveResult(Result<()>),
-    MultiDeleteResult(Result<()>),
+    /// Single archive result with optional destination UID from COPYUID
+    ArchiveResult(Result<Option<u32>>),
+    /// Single delete result with optional destination UID from COPYUID
+    DeleteResult(Result<Option<u32>>),
+    /// Multi-archive result with source UID -> dest UID mapping from COPYUID
+    MultiArchiveResult(Result<HashMap<String, u32>>),
+    /// Multi-delete result with source UID -> dest UID mapping from COPYUID
+    MultiDeleteResult(Result<HashMap<String, u32>>),
     RestoreResult(Result<()>),
     /// Progress update during bulk operations (current, total, action)
     Progress(usize, usize, String),
@@ -388,22 +397,28 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                                 // For selected emails, record undo entry and show "1 of N" progress
                                 match &op {
                                     DemoPendingOp::ArchiveSelected { emails, count, .. } => {
-                                        // Record undo entry upfront
-                                        let message_ids: Vec<(String, String)> = emails
+                                        // Record undo entry upfront (demo mode doesn't have real UIDs)
+                                        let undo_emails: Vec<(
+                                            Option<String>,
+                                            Option<u32>,
+                                            String,
+                                        )> = emails
                                             .iter()
-                                            .filter_map(|e| {
-                                                e.message_id.as_ref().map(|mid| {
-                                                    (mid.clone(), e.source_folder.clone())
-                                                })
+                                            .map(|e| {
+                                                (
+                                                    e.message_id.clone(),
+                                                    None,
+                                                    e.source_folder.clone(),
+                                                )
                                             })
                                             .collect();
-                                        if !message_ids.is_empty() {
+                                        if !undo_emails.is_empty() {
                                             let undo_entry = UndoEntry {
                                                 action_type: UndoActionType::Archive,
                                                 context: UndoContext::Group {
                                                     sender: format!("{} selected", count),
                                                 },
-                                                emails: message_ids,
+                                                emails: undo_emails,
                                                 current_folder: "[Gmail]/All Mail".to_string(),
                                             };
                                             undo_storage.push(emails.clone());
@@ -412,22 +427,28 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                                         ui_state.set_busy(format!("Archiving 1 of {}...", count));
                                     }
                                     DemoPendingOp::DeleteSelected { emails, count, .. } => {
-                                        // Record undo entry upfront
-                                        let message_ids: Vec<(String, String)> = emails
+                                        // Record undo entry upfront (demo mode doesn't have real UIDs)
+                                        let undo_emails: Vec<(
+                                            Option<String>,
+                                            Option<u32>,
+                                            String,
+                                        )> = emails
                                             .iter()
-                                            .filter_map(|e| {
-                                                e.message_id.as_ref().map(|mid| {
-                                                    (mid.clone(), e.source_folder.clone())
-                                                })
+                                            .map(|e| {
+                                                (
+                                                    e.message_id.clone(),
+                                                    None,
+                                                    e.source_folder.clone(),
+                                                )
                                             })
                                             .collect();
-                                        if !message_ids.is_empty() {
+                                        if !undo_emails.is_empty() {
                                             let undo_entry = UndoEntry {
                                                 action_type: UndoActionType::Delete,
                                                 context: UndoContext::Group {
                                                     sender: format!("{} selected", count),
                                                 },
-                                                emails: message_ids,
+                                                emails: undo_emails,
                                                 current_folder: "[Gmail]/Trash".to_string(),
                                             };
                                             undo_storage.push(emails.clone());
@@ -728,53 +749,48 @@ fn execute_demo_op(
     match op {
         DemoPendingOp::ArchiveSingle { email } => {
             ui_state.clear_busy();
-            if let Some(ref message_id) = email.message_id {
-                let undo_entry = UndoEntry {
-                    action_type: UndoActionType::Archive,
-                    context: UndoContext::SingleEmail {
-                        subject: email.subject.clone(),
-                    },
-                    emails: vec![(message_id.clone(), email.source_folder.clone())],
-                    current_folder: "[Gmail]/All Mail".to_string(),
-                };
-                undo_storage.push(vec![email.clone()]);
-                app.push_undo(undo_entry);
-            }
+            // Demo mode doesn't have real destination UIDs, so we use None
+            let undo_entry = UndoEntry {
+                action_type: UndoActionType::Archive,
+                context: UndoContext::SingleEmail {
+                    subject: email.subject.clone(),
+                },
+                emails: vec![(email.message_id.clone(), None, email.source_folder.clone())],
+                current_folder: "[Gmail]/All Mail".to_string(),
+            };
+            undo_storage.push(vec![email.clone()]);
+            app.push_undo(undo_entry);
             app.remove_email(&email.id);
             None
         }
         DemoPendingOp::DeleteSingle { email } => {
             ui_state.clear_busy();
-            if let Some(ref message_id) = email.message_id {
-                let undo_entry = UndoEntry {
-                    action_type: UndoActionType::Delete,
-                    context: UndoContext::SingleEmail {
-                        subject: email.subject.clone(),
-                    },
-                    emails: vec![(message_id.clone(), email.source_folder.clone())],
-                    current_folder: "[Gmail]/Trash".to_string(),
-                };
-                undo_storage.push(vec![email.clone()]);
-                app.push_undo(undo_entry);
-            }
+            // Demo mode doesn't have real destination UIDs, so we use None
+            let undo_entry = UndoEntry {
+                action_type: UndoActionType::Delete,
+                context: UndoContext::SingleEmail {
+                    subject: email.subject.clone(),
+                },
+                emails: vec![(email.message_id.clone(), None, email.source_folder.clone())],
+                current_folder: "[Gmail]/Trash".to_string(),
+            };
+            undo_storage.push(vec![email.clone()]);
+            app.push_undo(undo_entry);
             app.remove_email(&email.id);
             None
         }
         DemoPendingOp::ArchiveGroup { emails, sender } => {
             ui_state.clear_busy();
-            let message_ids: Vec<(String, String)> = emails
+            // Demo mode doesn't have real destination UIDs, so we use None
+            let undo_emails: Vec<(Option<String>, Option<u32>, String)> = emails
                 .iter()
-                .filter_map(|e| {
-                    e.message_id
-                        .as_ref()
-                        .map(|mid| (mid.clone(), e.source_folder.clone()))
-                })
+                .map(|e| (e.message_id.clone(), None, e.source_folder.clone()))
                 .collect();
-            if !message_ids.is_empty() {
+            if !undo_emails.is_empty() {
                 let undo_entry = UndoEntry {
                     action_type: UndoActionType::Archive,
                     context: UndoContext::Group { sender },
-                    emails: message_ids,
+                    emails: undo_emails,
                     current_folder: "[Gmail]/All Mail".to_string(),
                 };
                 undo_storage.push(emails);
@@ -785,19 +801,16 @@ fn execute_demo_op(
         }
         DemoPendingOp::DeleteGroup { emails, sender } => {
             ui_state.clear_busy();
-            let message_ids: Vec<(String, String)> = emails
+            // Demo mode doesn't have real destination UIDs, so we use None
+            let undo_emails: Vec<(Option<String>, Option<u32>, String)> = emails
                 .iter()
-                .filter_map(|e| {
-                    e.message_id
-                        .as_ref()
-                        .map(|mid| (mid.clone(), e.source_folder.clone()))
-                })
+                .map(|e| (e.message_id.clone(), None, e.source_folder.clone()))
                 .collect();
-            if !message_ids.is_empty() {
+            if !undo_emails.is_empty() {
                 let undo_entry = UndoEntry {
                     action_type: UndoActionType::Delete,
                     context: UndoContext::Group { sender },
-                    emails: message_ids,
+                    emails: undo_emails,
                     current_folder: "[Gmail]/Trash".to_string(),
                 };
                 undo_storage.push(emails);
@@ -812,19 +825,16 @@ fn execute_demo_op(
             subject,
         } => {
             ui_state.clear_busy();
-            let message_ids: Vec<(String, String)> = thread_emails
+            // Demo mode doesn't have real destination UIDs, so we use None
+            let undo_emails: Vec<(Option<String>, Option<u32>, String)> = thread_emails
                 .iter()
-                .filter_map(|e| {
-                    e.message_id
-                        .as_ref()
-                        .map(|mid| (mid.clone(), e.source_folder.clone()))
-                })
+                .map(|e| (e.message_id.clone(), None, e.source_folder.clone()))
                 .collect();
-            if !message_ids.is_empty() {
+            if !undo_emails.is_empty() {
                 let undo_entry = UndoEntry {
                     action_type: UndoActionType::Archive,
                     context: UndoContext::Thread { subject },
-                    emails: message_ids,
+                    emails: undo_emails,
                     current_folder: "[Gmail]/All Mail".to_string(),
                 };
                 undo_storage.push(thread_emails);
@@ -842,19 +852,16 @@ fn execute_demo_op(
             subject,
         } => {
             ui_state.clear_busy();
-            let message_ids: Vec<(String, String)> = thread_emails
+            // Demo mode doesn't have real destination UIDs, so we use None
+            let undo_emails: Vec<(Option<String>, Option<u32>, String)> = thread_emails
                 .iter()
-                .filter_map(|e| {
-                    e.message_id
-                        .as_ref()
-                        .map(|mid| (mid.clone(), e.source_folder.clone()))
-                })
+                .map(|e| (e.message_id.clone(), None, e.source_folder.clone()))
                 .collect();
-            if !message_ids.is_empty() {
+            if !undo_emails.is_empty() {
                 let undo_entry = UndoEntry {
                     action_type: UndoActionType::Delete,
                     context: UndoContext::Thread { subject },
-                    emails: message_ids,
+                    emails: undo_emails,
                     current_folder: "[Gmail]/Trash".to_string(),
                 };
                 undo_storage.push(thread_emails);
@@ -1561,7 +1568,8 @@ fn spawn_imap_worker(
                         by_folder.len()
                     );
 
-                    let mut result = Ok(());
+                    let mut all_uid_maps: HashMap<String, u32> = HashMap::new();
+                    let mut error: Option<anyhow::Error> = None;
                     let mut processed = 0;
 
                     'outer: for (folder, uids) in by_folder {
@@ -1601,20 +1609,29 @@ fn spawn_imap_worker(
                                 batch_num + 1,
                                 batch_start.elapsed().as_secs_f64()
                             );
-                            if let Err(e) = chunk_result {
-                                debug_log!("ArchiveMultiple: batch failed: {}", e);
-                                result = Err(e);
-                                break 'outer;
+                            match chunk_result {
+                                Ok(uid_map) => {
+                                    all_uid_maps.extend(uid_map);
+                                    processed += chunk.len();
+                                }
+                                Err(e) => {
+                                    debug_log!("ArchiveMultiple: batch failed: {}", e);
+                                    error = Some(e);
+                                    break 'outer;
+                                }
                             }
-                            processed += chunk.len();
                         }
                     }
                     debug_log!(
                         "ArchiveMultiple: finished archiving {} emails in {:.2}s ({})",
                         processed,
                         archive_start.elapsed().as_secs_f64(),
-                        if result.is_ok() { "success" } else { "failed" }
+                        if error.is_none() { "success" } else { "failed" }
                     );
+                    let result = match error {
+                        Some(e) => Err(e),
+                        None => Ok(all_uid_maps),
+                    };
                     let _ = resp_tx.send(ImapResponse::MultiArchiveResult(result));
                 }
                 ImapCommand::DeleteMultiple(ids_and_folders) => {
@@ -1642,7 +1659,8 @@ fn spawn_imap_worker(
                         by_folder.len()
                     );
 
-                    let mut result = Ok(());
+                    let mut all_uid_maps: HashMap<String, u32> = HashMap::new();
+                    let mut error: Option<anyhow::Error> = None;
                     let mut processed = 0;
 
                     'outer: for (folder, uids) in by_folder {
@@ -1682,26 +1700,35 @@ fn spawn_imap_worker(
                                 batch_num + 1,
                                 batch_start.elapsed().as_secs_f64()
                             );
-                            if let Err(e) = chunk_result {
-                                debug_log!("DeleteMultiple: batch failed: {}", e);
-                                result = Err(e);
-                                break 'outer;
+                            match chunk_result {
+                                Ok(uid_map) => {
+                                    all_uid_maps.extend(uid_map);
+                                    processed += chunk.len();
+                                }
+                                Err(e) => {
+                                    debug_log!("DeleteMultiple: batch failed: {}", e);
+                                    error = Some(e);
+                                    break 'outer;
+                                }
                             }
-                            processed += chunk.len();
                         }
                     }
                     debug_log!(
                         "DeleteMultiple: finished deleting {} emails in {:.2}s ({})",
                         processed,
                         delete_start.elapsed().as_secs_f64(),
-                        if result.is_ok() { "success" } else { "failed" }
+                        if error.is_none() { "success" } else { "failed" }
                     );
+                    let result = match error {
+                        Some(e) => Err(e),
+                        None => Ok(all_uid_maps),
+                    };
                     let _ = resp_tx.send(ImapResponse::MultiDeleteResult(result));
                 }
                 ImapCommand::RestoreEmails(restore_ops) => {
                     let total = restore_ops.len();
                     let mut result = Ok(());
-                    for (i, (message_id, current_folder, dest_folder)) in
+                    for (i, (message_id, dest_uid, current_folder, dest_folder)) in
                         restore_ops.iter().enumerate()
                     {
                         // Send progress update
@@ -1713,6 +1740,7 @@ fn spawn_imap_worker(
                         // Restore single email with retry
                         let single_restore = [(
                             message_id.clone(),
+                            *dest_uid,
                             current_folder.clone(),
                             dest_folder.clone(),
                         )];
@@ -1840,10 +1868,23 @@ fn run_app(
                         "UI: archive result: {}",
                         if result.is_ok() { "success" } else { "failed" }
                     );
-                    if let Some(PendingOp::ArchiveSingle(id)) = pending_operation.take()
-                        && result.is_ok()
+                    if let Some(PendingOp::ArchiveSingle {
+                        email_id,
+                        message_id,
+                        source_folder,
+                        subject,
+                    }) = pending_operation.take()
+                        && let Ok(dest_uid) = result
                     {
-                        app.remove_email(&id);
+                        // Create undo entry with destination UID
+                        let undo_entry = UndoEntry {
+                            action_type: UndoActionType::Archive,
+                            context: UndoContext::SingleEmail { subject },
+                            emails: vec![(message_id, dest_uid, source_folder)],
+                            current_folder: "[Gmail]/All Mail".to_string(),
+                        };
+                        app.push_undo(undo_entry);
+                        app.remove_email(&email_id);
                     }
                     ui_state.clear_busy();
                 }
@@ -1852,10 +1893,23 @@ fn run_app(
                         "UI: delete result: {}",
                         if result.is_ok() { "success" } else { "failed" }
                     );
-                    if let Some(PendingOp::DeleteSingle(id)) = pending_operation.take()
-                        && result.is_ok()
+                    if let Some(PendingOp::DeleteSingle {
+                        email_id,
+                        message_id,
+                        source_folder,
+                        subject,
+                    }) = pending_operation.take()
+                        && let Ok(dest_uid) = result
                     {
-                        app.remove_email(&id);
+                        // Create undo entry with destination UID
+                        let undo_entry = UndoEntry {
+                            action_type: UndoActionType::Delete,
+                            context: UndoContext::SingleEmail { subject },
+                            emails: vec![(message_id, dest_uid, source_folder)],
+                            current_folder: "[Gmail]/Trash".to_string(),
+                        };
+                        app.push_undo(undo_entry);
+                        app.remove_email(&email_id);
                     }
                     ui_state.clear_busy();
                 }
@@ -1865,19 +1919,70 @@ fn run_app(
                         if result.is_ok() { "success" } else { "failed" }
                     );
                     if let Some(op) = pending_operation.take()
-                        && result.is_ok()
+                        && let Ok(uid_map) = result
                     {
                         match op {
-                            PendingOp::ArchiveGroup => {
+                            PendingOp::ArchiveGroup { sender, emails } => {
+                                // Create undo entry with destination UIDs
+                                let undo_emails: Vec<_> = emails
+                                    .into_iter()
+                                    .map(|(uid, message_id, source_folder)| {
+                                        let dest_uid = uid_map.get(&uid).copied();
+                                        (message_id, dest_uid, source_folder)
+                                    })
+                                    .collect();
+                                let undo_entry = UndoEntry {
+                                    action_type: UndoActionType::Archive,
+                                    context: UndoContext::Group { sender },
+                                    emails: undo_emails,
+                                    current_folder: "[Gmail]/All Mail".to_string(),
+                                };
+                                app.push_undo(undo_entry);
                                 app.remove_current_group_emails();
                             }
-                            PendingOp::ArchiveThread(ref thread_id) => {
-                                app.remove_thread(thread_id);
+                            PendingOp::ArchiveThread {
+                                thread_id,
+                                subject,
+                                emails,
+                            } => {
+                                // Create undo entry with destination UIDs
+                                let undo_emails: Vec<_> = emails
+                                    .into_iter()
+                                    .map(|(uid, message_id, source_folder)| {
+                                        let dest_uid = uid_map.get(&uid).copied();
+                                        (message_id, dest_uid, source_folder)
+                                    })
+                                    .collect();
+                                let undo_entry = UndoEntry {
+                                    action_type: UndoActionType::Archive,
+                                    context: UndoContext::Thread { subject },
+                                    emails: undo_emails,
+                                    current_folder: "[Gmail]/All Mail".to_string(),
+                                };
+                                app.push_undo(undo_entry);
+                                app.remove_thread(&thread_id);
                                 if app.view == View::Thread {
                                     app.exit();
                                 }
                             }
-                            PendingOp::ArchiveSelected => {
+                            PendingOp::ArchiveSelected { count, emails } => {
+                                // Create undo entry with destination UIDs
+                                let undo_emails: Vec<_> = emails
+                                    .into_iter()
+                                    .map(|(uid, message_id, source_folder)| {
+                                        let dest_uid = uid_map.get(&uid).copied();
+                                        (message_id, dest_uid, source_folder)
+                                    })
+                                    .collect();
+                                let undo_entry = UndoEntry {
+                                    action_type: UndoActionType::Archive,
+                                    context: UndoContext::Group {
+                                        sender: format!("{} selected", count),
+                                    },
+                                    emails: undo_emails,
+                                    current_folder: "[Gmail]/All Mail".to_string(),
+                                };
+                                app.push_undo(undo_entry);
                                 app.remove_selected_emails();
                             }
                             _ => {}
@@ -1891,19 +1996,70 @@ fn run_app(
                         if result.is_ok() { "success" } else { "failed" }
                     );
                     if let Some(op) = pending_operation.take()
-                        && result.is_ok()
+                        && let Ok(uid_map) = result
                     {
                         match op {
-                            PendingOp::DeleteGroup => {
+                            PendingOp::DeleteGroup { sender, emails } => {
+                                // Create undo entry with destination UIDs
+                                let undo_emails: Vec<_> = emails
+                                    .into_iter()
+                                    .map(|(uid, message_id, source_folder)| {
+                                        let dest_uid = uid_map.get(&uid).copied();
+                                        (message_id, dest_uid, source_folder)
+                                    })
+                                    .collect();
+                                let undo_entry = UndoEntry {
+                                    action_type: UndoActionType::Delete,
+                                    context: UndoContext::Group { sender },
+                                    emails: undo_emails,
+                                    current_folder: "[Gmail]/Trash".to_string(),
+                                };
+                                app.push_undo(undo_entry);
                                 app.remove_current_group_emails();
                             }
-                            PendingOp::DeleteThread(ref thread_id) => {
-                                app.remove_thread(thread_id);
+                            PendingOp::DeleteThread {
+                                thread_id,
+                                subject,
+                                emails,
+                            } => {
+                                // Create undo entry with destination UIDs
+                                let undo_emails: Vec<_> = emails
+                                    .into_iter()
+                                    .map(|(uid, message_id, source_folder)| {
+                                        let dest_uid = uid_map.get(&uid).copied();
+                                        (message_id, dest_uid, source_folder)
+                                    })
+                                    .collect();
+                                let undo_entry = UndoEntry {
+                                    action_type: UndoActionType::Delete,
+                                    context: UndoContext::Thread { subject },
+                                    emails: undo_emails,
+                                    current_folder: "[Gmail]/Trash".to_string(),
+                                };
+                                app.push_undo(undo_entry);
+                                app.remove_thread(&thread_id);
                                 if app.view == View::Thread {
                                     app.exit();
                                 }
                             }
-                            PendingOp::DeleteSelected => {
+                            PendingOp::DeleteSelected { count, emails } => {
+                                // Create undo entry with destination UIDs
+                                let undo_emails: Vec<_> = emails
+                                    .into_iter()
+                                    .map(|(uid, message_id, source_folder)| {
+                                        let dest_uid = uid_map.get(&uid).copied();
+                                        (message_id, dest_uid, source_folder)
+                                    })
+                                    .collect();
+                                let undo_entry = UndoEntry {
+                                    action_type: UndoActionType::Delete,
+                                    context: UndoContext::Group {
+                                        sender: format!("{} selected", count),
+                                    },
+                                    emails: undo_emails,
+                                    current_folder: "[Gmail]/Trash".to_string(),
+                                };
+                                app.push_undo(undo_entry);
                                 app.remove_selected_emails();
                             }
                             _ => {}
@@ -2143,17 +2299,20 @@ fn run_app(
                     KeyCode::Enter => {
                         // Execute the undo action
                         if let Some(entry) = app.current_undo_entry() {
-                            let restore_ops: Vec<(String, String, String)> = entry
-                                .emails
-                                .iter()
-                                .map(|(uid, orig_folder)| {
-                                    (
-                                        uid.clone(),
-                                        entry.current_folder.clone(),
-                                        orig_folder.clone(),
-                                    )
-                                })
-                                .collect();
+                            // Build restore ops: (message_id, dest_uid, current_folder, dest_folder)
+                            let restore_ops: Vec<(Option<String>, Option<u32>, String, String)> =
+                                entry
+                                    .emails
+                                    .iter()
+                                    .map(|(message_id, dest_uid, orig_folder)| {
+                                        (
+                                            message_id.clone(),
+                                            *dest_uid,
+                                            entry.current_folder.clone(),
+                                            orig_folder.clone(),
+                                        )
+                                    })
+                                    .collect();
 
                             if !restore_ops.is_empty() {
                                 let count = restore_ops.len();
@@ -2302,16 +2461,56 @@ fn run_app(
 }
 
 /// Tracks pending operations so we know what to update when response arrives
+/// Also stores data needed to create undo entries when the result comes back
 enum PendingOp {
-    ArchiveSingle(String), // email id
-    DeleteSingle(String),  // email id
-    ArchiveGroup,
-    DeleteGroup,
-    ArchiveThread(String), // thread id
-    DeleteThread(String),  // thread id
-    ArchiveSelected,       // selected emails
-    DeleteSelected,        // selected emails
-    Undo(usize),           // index in undo history
+    /// Archive single email: (email_id, message_id, source_folder, subject)
+    ArchiveSingle {
+        email_id: String,
+        message_id: Option<String>,
+        source_folder: String,
+        subject: String,
+    },
+    /// Delete single email: (email_id, message_id, source_folder, subject)
+    DeleteSingle {
+        email_id: String,
+        message_id: Option<String>,
+        source_folder: String,
+        subject: String,
+    },
+    /// Archive group: (sender, Vec<(uid, message_id, source_folder)>)
+    ArchiveGroup {
+        sender: String,
+        emails: Vec<(String, Option<String>, String)>,
+    },
+    /// Delete group: (sender, Vec<(uid, message_id, source_folder)>)
+    DeleteGroup {
+        sender: String,
+        emails: Vec<(String, Option<String>, String)>,
+    },
+    /// Archive thread: (thread_id, subject, Vec<(uid, message_id, source_folder)>)
+    ArchiveThread {
+        thread_id: String,
+        subject: String,
+        emails: Vec<(String, Option<String>, String)>,
+    },
+    /// Delete thread: (thread_id, subject, Vec<(uid, message_id, source_folder)>)
+    DeleteThread {
+        thread_id: String,
+        subject: String,
+        emails: Vec<(String, Option<String>, String)>,
+    },
+    /// Archive selected: (count_label, Vec<(uid, message_id, source_folder)>)
+    ArchiveSelected {
+        count: usize,
+        emails: Vec<(String, Option<String>, String)>,
+    },
+    /// Delete selected: (count_label, Vec<(uid, message_id, source_folder)>)
+    DeleteSelected {
+        count: usize,
+        emails: Vec<(String, Option<String>, String)>,
+    },
+    /// Undo: index in undo history
+    Undo(usize),
 }
 
 /// Handles the 'a' key - archive single email or selected emails (not available in thread view)
@@ -2348,21 +2547,14 @@ fn handle_archive(
             }
             // Archive single email (only this sender's email)
             if let Some(email) = app.current_email().cloned() {
-                // Record undo entry before the action (only if email has Message-ID)
-                if let Some(ref message_id) = email.message_id {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Archive,
-                        context: UndoContext::SingleEmail {
-                            subject: email.subject.clone(),
-                        },
-                        emails: vec![(message_id.clone(), email.source_folder.clone())],
-                        current_folder: "[Gmail]/All Mail".to_string(),
-                    };
-                    app.push_undo(undo_entry);
-                }
-
                 ui_state.set_busy("Archiving...");
-                *pending_operation = Some(PendingOp::ArchiveSingle(email.id.clone()));
+                // Store data needed for undo entry creation when result arrives
+                *pending_operation = Some(PendingOp::ArchiveSingle {
+                    email_id: email.id.clone(),
+                    message_id: email.message_id.clone(),
+                    source_folder: email.source_folder.clone(),
+                    subject: email.subject.clone(),
+                });
                 cmd_tx.send(ImapCommand::ArchiveEmail(
                     email.id,
                     email.source_folder.clone(),
@@ -2443,21 +2635,14 @@ fn handle_delete(
             }
             // Delete single email (only this sender's email)
             if let Some(email) = app.current_email().cloned() {
-                // Record undo entry before the action (only if email has Message-ID)
-                if let Some(ref message_id) = email.message_id {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Delete,
-                        context: UndoContext::SingleEmail {
-                            subject: email.subject.clone(),
-                        },
-                        emails: vec![(message_id.clone(), email.source_folder.clone())],
-                        current_folder: "[Gmail]/Trash".to_string(),
-                    };
-                    app.push_undo(undo_entry);
-                }
-
                 ui_state.set_busy("Deleting...");
-                *pending_operation = Some(PendingOp::DeleteSingle(email.id.clone()));
+                // Store data needed for undo entry creation when result arrives
+                *pending_operation = Some(PendingOp::DeleteSingle {
+                    email_id: email.id.clone(),
+                    message_id: email.message_id.clone(),
+                    source_folder: email.source_folder.clone(),
+                    subject: email.subject.clone(),
+                });
                 cmd_tx.send(ImapCommand::DeleteEmail(
                     email.id,
                     email.source_folder.clone(),
@@ -2551,146 +2736,94 @@ fn handle_confirmed_action(
         ConfirmAction::ArchiveEmails { sender, .. } => {
             // Archive only this sender's emails (not full threads)
             let email_ids = app.current_group_email_ids();
-            let message_ids = app.current_group_message_ids();
+            let emails_for_undo = app.current_group_emails_for_undo();
             if !email_ids.is_empty() {
-                // Record undo entry before the action (using Message-IDs for restore)
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Archive,
-                        context: UndoContext::Group {
-                            sender: sender.clone(),
-                        },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/All Mail".to_string(),
-                    };
-                    app.push_undo(undo_entry);
-                }
-
                 ui_state.set_busy(format!("Archiving {} emails...", email_ids.len()));
-                *pending_operation = Some(PendingOp::ArchiveGroup);
+                // Store data for undo entry creation when result arrives
+                *pending_operation = Some(PendingOp::ArchiveGroup {
+                    sender,
+                    emails: emails_for_undo,
+                });
                 cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
             }
         }
         ConfirmAction::DeleteEmails { sender, .. } => {
             // Delete only this sender's emails (not full threads)
             let email_ids = app.current_group_email_ids();
-            let message_ids = app.current_group_message_ids();
+            let emails_for_undo = app.current_group_emails_for_undo();
             if !email_ids.is_empty() {
-                // Record undo entry before the action (using Message-IDs for restore)
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Delete,
-                        context: UndoContext::Group {
-                            sender: sender.clone(),
-                        },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/Trash".to_string(),
-                    };
-                    app.push_undo(undo_entry);
-                }
-
                 ui_state.set_busy(format!("Deleting {} emails...", email_ids.len()));
-                *pending_operation = Some(PendingOp::DeleteGroup);
+                // Store data for undo entry creation when result arrives
+                *pending_operation = Some(PendingOp::DeleteGroup {
+                    sender,
+                    emails: emails_for_undo,
+                });
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
         }
         ConfirmAction::ArchiveThread { .. } => {
             // Archive entire thread (including user's sent emails)
             let email_ids = app.current_thread_email_ids();
-            let message_ids = app.current_thread_message_ids();
+            let emails_for_undo = app.current_thread_emails_for_undo();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
             let subject = app.current_email().map(|e| e.subject.clone());
             if !email_ids.is_empty()
                 && let Some(tid) = thread_id
                 && let Some(subj) = subject
             {
-                // Record undo entry before the action (using Message-IDs for restore)
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Archive,
-                        context: UndoContext::Thread {
-                            subject: subj.clone(),
-                        },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/All Mail".to_string(),
-                    };
-                    app.push_undo(undo_entry);
-                }
-
                 ui_state.set_busy(format!("Archiving thread ({} emails)...", email_ids.len()));
-                *pending_operation = Some(PendingOp::ArchiveThread(tid));
+                // Store data for undo entry creation when result arrives
+                *pending_operation = Some(PendingOp::ArchiveThread {
+                    thread_id: tid,
+                    subject: subj,
+                    emails: emails_for_undo,
+                });
                 cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
             }
         }
         ConfirmAction::DeleteThread { .. } => {
             // Delete entire thread (including user's sent emails)
             let email_ids = app.current_thread_email_ids();
-            let message_ids = app.current_thread_message_ids();
+            let emails_for_undo = app.current_thread_emails_for_undo();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
             let subject = app.current_email().map(|e| e.subject.clone());
             if !email_ids.is_empty()
                 && let Some(tid) = thread_id
                 && let Some(subj) = subject
             {
-                // Record undo entry before the action (using Message-IDs for restore)
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Delete,
-                        context: UndoContext::Thread {
-                            subject: subj.clone(),
-                        },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/Trash".to_string(),
-                    };
-                    app.push_undo(undo_entry);
-                }
-
                 ui_state.set_busy(format!("Deleting thread ({} emails)...", email_ids.len()));
-                *pending_operation = Some(PendingOp::DeleteThread(tid));
+                // Store data for undo entry creation when result arrives
+                *pending_operation = Some(PendingOp::DeleteThread {
+                    thread_id: tid,
+                    subject: subj,
+                    emails: emails_for_undo,
+                });
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
         }
         ConfirmAction::ArchiveSelected { count } => {
             let email_ids = app.selected_email_ids();
-            let message_ids = app.selected_message_ids();
+            let emails_for_undo = app.selected_emails_for_undo();
             if !email_ids.is_empty() {
-                // Record undo entry before the action
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Archive,
-                        context: UndoContext::Group {
-                            sender: format!("{} selected", count),
-                        },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/All Mail".to_string(),
-                    };
-                    app.push_undo(undo_entry);
-                }
-
                 ui_state.set_busy(format!("Archiving {} emails...", email_ids.len()));
-                *pending_operation = Some(PendingOp::ArchiveSelected);
+                // Store data for undo entry creation when result arrives
+                *pending_operation = Some(PendingOp::ArchiveSelected {
+                    count,
+                    emails: emails_for_undo,
+                });
                 cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
             }
         }
         ConfirmAction::DeleteSelected { count } => {
             let email_ids = app.selected_email_ids();
-            let message_ids = app.selected_message_ids();
+            let emails_for_undo = app.selected_emails_for_undo();
             if !email_ids.is_empty() {
-                // Record undo entry before the action
-                if !message_ids.is_empty() {
-                    let undo_entry = UndoEntry {
-                        action_type: UndoActionType::Delete,
-                        context: UndoContext::Group {
-                            sender: format!("{} selected", count),
-                        },
-                        emails: message_ids,
-                        current_folder: "[Gmail]/Trash".to_string(),
-                    };
-                    app.push_undo(undo_entry);
-                }
-
                 ui_state.set_busy(format!("Deleting {} emails...", email_ids.len()));
-                *pending_operation = Some(PendingOp::DeleteSelected);
+                // Store data for undo entry creation when result arrives
+                *pending_operation = Some(PendingOp::DeleteSelected {
+                    count,
+                    emails: emails_for_undo,
+                });
                 cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
         }

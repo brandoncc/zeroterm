@@ -53,9 +53,14 @@ pub enum UndoContext {
 pub struct UndoEntry {
     pub action_type: UndoActionType,
     pub context: UndoContext,
-    /// Email Message-IDs with their original folders: (message_id, original_folder)
-    /// We use Message-ID instead of UID because UIDs change when emails move folders
-    pub emails: Vec<(String, String)>,
+    /// Email identifiers with their original folders: (message_id, dest_uid, original_folder)
+    ///
+    /// - message_id: RFC 5322 Message-ID for fallback search (None if not available)
+    /// - dest_uid: UID in destination folder from COPYUID response (None if not available)
+    /// - original_folder: The folder the email was in before the action
+    ///
+    /// When dest_uid is available, we use fast UID-based restore; otherwise fall back to Message-ID search
+    pub emails: Vec<(Option<String>, Option<u32>, String)>,
     /// Where the emails are now: "[Gmail]/All Mail" or "[Gmail]/Trash"
     pub current_folder: String,
 }
@@ -833,36 +838,6 @@ impl App {
             .collect()
     }
 
-    /// Gets all email Message-IDs and source folders in the current group
-    /// Only returns emails that have a Message-ID
-    pub fn current_group_message_ids(&self) -> Vec<(String, String)> {
-        self.current_group()
-            .map(|g| {
-                g.emails
-                    .iter()
-                    .filter_map(|e| {
-                        e.message_id
-                            .as_ref()
-                            .map(|mid| (mid.clone(), e.source_folder.clone()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Gets all email Message-IDs and source folders in the current thread
-    /// Only returns emails that have a Message-ID
-    pub fn current_thread_message_ids(&self) -> Vec<(String, String)> {
-        self.current_thread_emails()
-            .iter()
-            .filter_map(|e| {
-                e.message_id
-                    .as_ref()
-                    .map(|mid| (mid.clone(), e.source_folder.clone()))
-            })
-            .collect()
-    }
-
     /// Gets the currently selected email in thread view
     pub fn current_thread_email(&self) -> Option<&Email> {
         let thread_emails = self.current_thread_emails();
@@ -929,21 +904,38 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Returns the selected emails' Message-IDs and source folders (for undo support)
-    pub fn selected_message_ids(&self) -> Vec<(String, String)> {
+    /// Returns the selected emails' data for undo support: (uid, message_id, source_folder)
+    /// This returns all selected emails with their UIDs and optional Message-IDs
+    pub fn selected_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
         self.current_group()
             .map(|g| {
                 g.emails
                     .iter()
                     .filter(|e| self.selected_emails.contains(&e.id))
-                    .filter_map(|e| {
-                        e.message_id
-                            .as_ref()
-                            .map(|mid| (mid.clone(), e.source_folder.clone()))
-                    })
+                    .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Returns the current group's emails' data for undo support: (uid, message_id, source_folder)
+    pub fn current_group_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
+        self.current_group()
+            .map(|g| {
+                g.emails
+                    .iter()
+                    .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns the current thread's emails' data for undo support: (uid, message_id, source_folder)
+    pub fn current_thread_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
+        self.current_thread_emails()
+            .iter()
+            .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
+            .collect()
     }
 
     /// Returns clones of the selected Email objects
@@ -1931,7 +1923,11 @@ mod tests {
             context: UndoContext::SingleEmail {
                 subject: "Test Email".to_string(),
             },
-            emails: vec![("1".to_string(), "INBOX".to_string())],
+            emails: vec![(
+                Some("<1@example.com>".to_string()),
+                Some(100),
+                "INBOX".to_string(),
+            )],
             current_folder: "[Gmail]/All Mail".to_string(),
         };
         app.push_undo(entry1);
@@ -1944,8 +1940,16 @@ mod tests {
                 sender: "test@example.com".to_string(),
             },
             emails: vec![
-                ("2".to_string(), "INBOX".to_string()),
-                ("3".to_string(), "INBOX".to_string()),
+                (
+                    Some("<2@example.com>".to_string()),
+                    Some(101),
+                    "INBOX".to_string(),
+                ),
+                (
+                    Some("<3@example.com>".to_string()),
+                    Some(102),
+                    "INBOX".to_string(),
+                ),
             ],
             current_folder: "[Gmail]/Trash".to_string(),
         };
@@ -1977,7 +1981,11 @@ mod tests {
                 context: UndoContext::SingleEmail {
                     subject: format!("Email {}", i),
                 },
-                emails: vec![(i.to_string(), "INBOX".to_string())],
+                emails: vec![(
+                    Some(format!("<{}@example.com>", i)),
+                    Some(i as u32),
+                    "INBOX".to_string(),
+                )],
                 current_folder: "[Gmail]/All Mail".to_string(),
             };
             app.push_undo(entry);
@@ -2006,7 +2014,11 @@ mod tests {
                 context: UndoContext::SingleEmail {
                     subject: format!("Email {}", i),
                 },
-                emails: vec![(i.to_string(), "INBOX".to_string())],
+                emails: vec![(
+                    Some(format!("<{}@example.com>", i)),
+                    Some(i as u32),
+                    "INBOX".to_string(),
+                )],
                 current_folder: "[Gmail]/All Mail".to_string(),
             };
             app.push_undo(entry);

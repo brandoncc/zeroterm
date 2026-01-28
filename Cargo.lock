@@ -1404,12 +1404,13 @@ checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "zeroterm"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
  "crossterm",
  "imap",
+ "imap-proto",
  "mailparse",
  "mockall",
  "native-tls",
