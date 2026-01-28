@@ -1,18 +1,14 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use imap::{ImapConnection, Session};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::email::{Email, EmailBuilder, build_thread_ids};
+use crate::email::{Email, EmailBuilder};
 
 /// Trait for email operations - allows mocking in tests
 #[cfg_attr(test, mockall::automock)]
 pub trait EmailClient {
-    /// Fetches inbox emails
-    fn fetch_inbox(&mut self) -> Result<Vec<Email>>;
-
-    /// Fetches sent emails
-    fn fetch_sent(&mut self) -> Result<Vec<Email>>;
-
     /// Archives an email (removes from inbox)
     fn archive_email(&mut self, email_id: &str, folder: &str) -> Result<()>;
 
@@ -125,6 +121,75 @@ impl ImapClient {
         Some(builder.build())
     }
 
+    /// Gets the message count for a folder without fetching all messages
+    pub fn get_folder_count(&mut self, folder: &str) -> Result<u32> {
+        let mailbox = self
+            .session
+            .select(folder)
+            .context(format!("Failed to select {}", folder))?;
+        Ok(mailbox.exists)
+    }
+
+    /// Fetches inbox emails within a sequence range (inclusive)
+    /// If a progress counter is provided, it will be incremented for each email parsed
+    pub fn fetch_inbox_range(
+        &mut self,
+        start: u32,
+        end: u32,
+        progress: Option<&Arc<AtomicUsize>>,
+    ) -> Result<Vec<Email>> {
+        self.fetch_folder_range("INBOX", start, end, progress)
+    }
+
+    /// Fetches sent emails within a sequence range (inclusive)
+    /// If a progress counter is provided, it will be incremented for each email parsed
+    pub fn fetch_sent_range(
+        &mut self,
+        start: u32,
+        end: u32,
+        progress: Option<&Arc<AtomicUsize>>,
+    ) -> Result<Vec<Email>> {
+        self.fetch_folder_range("[Gmail]/Sent Mail", start, end, progress)
+    }
+
+    /// Fetches emails from a folder within a sequence range (inclusive)
+    fn fetch_folder_range(
+        &mut self,
+        folder: &str,
+        start: u32,
+        end: u32,
+        progress: Option<&Arc<AtomicUsize>>,
+    ) -> Result<Vec<Email>> {
+        if start > end || start == 0 {
+            return Ok(Vec::new());
+        }
+
+        self.session
+            .select(folder)
+            .context(format!("Failed to select {}", folder))?;
+
+        let sequence = format!("{}:{}", start, end);
+        let messages = self
+            .session
+            .fetch(&sequence, "(UID ENVELOPE BODY.PEEK[HEADER])")
+            .context(format!(
+                "Failed to fetch messages from {} ({})",
+                folder, sequence
+            ))?;
+
+        let mut emails = Vec::new();
+        for msg in messages.iter() {
+            if let Some(email) = self.parse_message(msg, folder) {
+                emails.push(email);
+                if let Some(counter) = progress {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        Ok(emails)
+    }
+
     /// Logs out and closes the connection
     pub fn logout(mut self) -> Result<()> {
         self.session.logout().context("Failed to logout")?;
@@ -133,65 +198,6 @@ impl ImapClient {
 }
 
 impl EmailClient for ImapClient {
-    fn fetch_inbox(&mut self) -> Result<Vec<Email>> {
-        self.session
-            .select("INBOX")
-            .context("Failed to select INBOX")?;
-
-        // Check if there are any messages
-        let mailbox = self.session.select("INBOX")?;
-        if mailbox.exists == 0 {
-            return Ok(Vec::new());
-        }
-
-        // Fetch all messages with headers
-        let messages = self
-            .session
-            .fetch("1:*", "(UID ENVELOPE BODY.PEEK[HEADER])")
-            .context("Failed to fetch messages")?;
-
-        let mut emails = Vec::new();
-        for msg in messages.iter() {
-            if let Some(email) = self.parse_message(msg, "INBOX") {
-                emails.push(email);
-            }
-        }
-
-        // Build thread IDs from Message-ID/In-Reply-To headers
-        build_thread_ids(&mut emails);
-
-        Ok(emails)
-    }
-
-    fn fetch_sent(&mut self) -> Result<Vec<Email>> {
-        self.session
-            .select("[Gmail]/Sent Mail")
-            .context("Failed to select [Gmail]/Sent Mail")?;
-
-        // Check if there are any messages
-        let mailbox = self.session.select("[Gmail]/Sent Mail")?;
-        if mailbox.exists == 0 {
-            return Ok(Vec::new());
-        }
-
-        // Fetch all messages with headers
-        let messages = self
-            .session
-            .fetch("1:*", "(UID ENVELOPE BODY.PEEK[HEADER])")
-            .context("Failed to fetch sent messages")?;
-
-        let mut emails = Vec::new();
-        for msg in messages.iter() {
-            if let Some(email) = self.parse_message(msg, "[Gmail]/Sent Mail") {
-                emails.push(email);
-            }
-        }
-
-        // Note: thread IDs will be built after combining with inbox emails
-
-        Ok(emails)
-    }
-
     fn archive_email(&mut self, uid: &str, folder: &str) -> Result<()> {
         self.session
             .select(folder)
@@ -479,27 +485,6 @@ mod tests {
     }
 
     // Mock client tests
-    #[test]
-    fn test_mock_client_fetch() {
-        use chrono::Utc;
-
-        let mut mock = MockEmailClient::new();
-
-        mock.expect_fetch_inbox().returning(|| {
-            Ok(vec![Email::new(
-                "1".to_string(),
-                "t1".to_string(),
-                "test@example.com".to_string(),
-                "Subject".to_string(),
-                "Snippet".to_string(),
-                Utc::now(),
-            )])
-        });
-
-        let emails = mock.fetch_inbox().unwrap();
-        assert_eq!(emails.len(), 1);
-    }
-
     #[test]
     fn test_mock_client_archive() {
         let mut mock = MockEmailClient::new();

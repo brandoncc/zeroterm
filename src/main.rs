@@ -7,7 +7,8 @@ mod ui;
 
 use std::io;
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,7 +31,7 @@ use ui::widgets::{AccountSelection, ConfirmAction, UiState, WARNING_CHAR};
 
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
-    FetchInbox,
+    FetchInbox { parallel_connections: usize },
     ArchiveEmail(String, String),                 // (uid, folder)
     DeleteEmail(String, String),                  // (uid, folder)
     ArchiveMultiple(Vec<(String, String)>),       // Vec<(uid, folder)>
@@ -100,7 +101,12 @@ fn main() -> Result<()> {
 
     // User may have quit during account selection
     let result = if let Some(account) = selected_account {
-        run_app(&mut terminal, account, cfg.protect_threads)
+        run_app(
+            &mut terminal,
+            account,
+            cfg.protect_threads,
+            cfg.parallel_connections,
+        )
     } else {
         Ok(())
     };
@@ -1136,21 +1142,163 @@ fn spawn_imap_worker(
         // Process commands
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {
-                ImapCommand::FetchInbox => {
-                    // Fetch from both INBOX and Sent Mail
-                    let inbox_result = client.fetch_inbox();
-                    let sent_result = client.fetch_sent();
-
-                    let result = match (inbox_result, sent_result) {
-                        (Ok(mut inbox), Ok(sent)) => {
-                            inbox.extend(sent);
-                            // Build thread IDs from combined list
-                            email::build_thread_ids(&mut inbox);
-                            Ok(inbox)
+                ImapCommand::FetchInbox {
+                    parallel_connections,
+                } => {
+                    // Get message counts first
+                    let inbox_count = match client.get_folder_count("INBOX") {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = resp_tx.send(ImapResponse::Emails(Err(e)));
+                            continue;
                         }
-                        (Err(e), _) => Err(e),
-                        (_, Err(e)) => Err(e),
                     };
+                    let sent_count = match client.get_folder_count("[Gmail]/Sent Mail") {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = resp_tx.send(ImapResponse::Emails(Err(e)));
+                            continue;
+                        }
+                    };
+
+                    let total = (inbox_count + sent_count) as usize;
+
+                    // If mailbox is empty or small, use sequential fetch
+                    if total == 0 {
+                        let _ = resp_tx.send(ImapResponse::Emails(Ok(Vec::new())));
+                        continue;
+                    }
+
+                    // Shared counter for progress reporting
+                    let fetched_count = Arc::new(AtomicUsize::new(0));
+
+                    // Calculate how many workers we actually need
+                    let num_workers = parallel_connections.min(total).max(1);
+
+                    // Spawn progress reporting thread
+                    let progress_fetched = Arc::clone(&fetched_count);
+                    let progress_tx = resp_tx.clone();
+                    let progress_handle = thread::spawn(move || {
+                        loop {
+                            let current = progress_fetched.load(Ordering::Relaxed);
+                            let _ = progress_tx.send(ImapResponse::Progress(
+                                current,
+                                total,
+                                "Loading".to_string(),
+                            ));
+                            if current >= total {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(100));
+                        }
+                    });
+
+                    // Spawn parallel inbox fetchers
+                    let inbox_chunk_size = if inbox_count > 0 {
+                        (inbox_count as usize).div_ceil(num_workers)
+                    } else {
+                        0
+                    };
+
+                    let inbox_handles: Vec<_> = (0..num_workers)
+                        .filter_map(|i| {
+                            let start = (i * inbox_chunk_size + 1) as u32;
+                            let end = (((i + 1) * inbox_chunk_size) as u32).min(inbox_count);
+                            if start > inbox_count || inbox_count == 0 {
+                                return None;
+                            }
+                            let email_addr = account.email.clone();
+                            let password = account.app_password.clone();
+                            let counter = Arc::clone(&fetched_count);
+                            Some(thread::spawn(move || {
+                                let mut worker_client =
+                                    ImapClient::connect(&email_addr, &password)?;
+                                let emails =
+                                    worker_client.fetch_inbox_range(start, end, Some(&counter))?;
+                                let _ = worker_client.logout();
+                                Ok::<_, anyhow::Error>(emails)
+                            }))
+                        })
+                        .collect();
+
+                    // Spawn parallel sent fetchers
+                    let sent_chunk_size = if sent_count > 0 {
+                        (sent_count as usize).div_ceil(num_workers)
+                    } else {
+                        0
+                    };
+
+                    let sent_handles: Vec<_> = (0..num_workers)
+                        .filter_map(|i| {
+                            let start = (i * sent_chunk_size + 1) as u32;
+                            let end = (((i + 1) * sent_chunk_size) as u32).min(sent_count);
+                            if start > sent_count || sent_count == 0 {
+                                return None;
+                            }
+                            let email_addr = account.email.clone();
+                            let password = account.app_password.clone();
+                            let counter = Arc::clone(&fetched_count);
+                            Some(thread::spawn(move || {
+                                let mut worker_client =
+                                    ImapClient::connect(&email_addr, &password)?;
+                                let emails =
+                                    worker_client.fetch_sent_range(start, end, Some(&counter))?;
+                                let _ = worker_client.logout();
+                                Ok::<_, anyhow::Error>(emails)
+                            }))
+                        })
+                        .collect();
+
+                    // Collect inbox results
+                    let mut all_emails = Vec::new();
+                    let mut error: Option<anyhow::Error> = None;
+
+                    for handle in inbox_handles {
+                        match handle.join() {
+                            Ok(Ok(emails)) => all_emails.extend(emails),
+                            Ok(Err(e)) => {
+                                if error.is_none() {
+                                    error = Some(e);
+                                }
+                            }
+                            Err(_) => {
+                                if error.is_none() {
+                                    error = Some(anyhow::anyhow!("Worker thread panicked"));
+                                }
+                            }
+                        }
+                    }
+
+                    // Collect sent results
+                    for handle in sent_handles {
+                        match handle.join() {
+                            Ok(Ok(emails)) => all_emails.extend(emails),
+                            Ok(Err(e)) => {
+                                if error.is_none() {
+                                    error = Some(e);
+                                }
+                            }
+                            Err(_) => {
+                                if error.is_none() {
+                                    error = Some(anyhow::anyhow!("Worker thread panicked"));
+                                }
+                            }
+                        }
+                    }
+
+                    // Signal progress thread to stop and wait for it
+                    fetched_count.store(total, Ordering::Relaxed);
+                    let _ = progress_handle.join();
+
+                    let result = if let Some(e) = error {
+                        Err(e)
+                    } else {
+                        // Dedupe and build thread IDs
+                        email::dedupe_emails(&mut all_emails);
+                        email::build_thread_ids(&mut all_emails);
+                        Ok(all_emails)
+                    };
+
                     let _ = resp_tx.send(ImapResponse::Emails(result));
                 }
                 ImapCommand::ArchiveEmail(id, folder) => {
@@ -1269,6 +1417,7 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     account: (String, AccountConfig),
     protect_threads: bool,
+    parallel_connections: usize,
 ) -> Result<()> {
     let (account_name, account_config) = account;
     let user_email = account_config.email.clone();
@@ -1296,7 +1445,9 @@ fn run_app(
                 ui_state.set_busy("Loading emails...");
                 app.ensure_valid_selection();
                 terminal.draw(|f| render(f, &app, &mut ui_state))?;
-                cmd_tx.send(ImapCommand::FetchInbox)?;
+                cmd_tx.send(ImapCommand::FetchInbox {
+                    parallel_connections,
+                })?;
                 break;
             }
             Ok(ImapResponse::Error(e)) => {
@@ -1413,7 +1564,9 @@ fn run_app(
                                 // Stay in undo view - user can close it manually with Escape
                                 // Trigger refresh to update the email list
                                 ui_state.set_busy("Refreshing...");
-                                let _ = cmd_tx.send(ImapCommand::FetchInbox);
+                                let _ = cmd_tx.send(ImapCommand::FetchInbox {
+                                    parallel_connections,
+                                });
                             }
                             Err(e) => {
                                 ui_state.clear_busy();
@@ -1716,7 +1869,9 @@ fn run_app(
                 }
                 KeyCode::Char('r') => {
                     ui_state.set_busy("Refreshing...");
-                    cmd_tx.send(ImapCommand::FetchInbox)?;
+                    cmd_tx.send(ImapCommand::FetchInbox {
+                        parallel_connections,
+                    })?;
                 }
                 KeyCode::Char('t') => {
                     if app.view == View::GroupList || app.view == View::EmailList {

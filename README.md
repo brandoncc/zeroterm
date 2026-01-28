@@ -176,6 +176,45 @@ cargo run
 cargo test
 ```
 
+## Recovery Tool
+
+Zeroterm includes a recovery tool to help restore accidentally deleted emails from Gmail Trash.
+
+### Usage
+
+```sh
+# Show help
+cargo run --bin recover
+
+# List available accounts
+cargo run --bin recover -- --list-accounts
+
+# Check recently deleted emails (shows top senders in Trash)
+cargo run --bin recover -- --account personal --check
+
+# Check deleted emails from a specific sender
+cargo run --bin recover -- --account personal --check --from "notifications@github.com"
+
+# Restore deleted emails from a specific sender
+cargo run --bin recover -- --account personal --restore --from "notifications@github.com"
+
+# Restore the most recent N deleted emails (no sender filter)
+cargo run --bin recover -- --account personal --restore --count 1841
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--check` | List emails in Trash with sender counts |
+| `--restore` | Move matching emails back to destination folder |
+| `--list-accounts` | List available accounts from config |
+| `--account <NAME>` | Account name from config (required) |
+| `--from <SENDER>` | Filter by sender email (partial match, case-insensitive) |
+| `--to <FOLDER>` | Destination folder for restore (default: INBOX) |
+| `--limit <N>` | How many recent emails to fetch (default: 2000) |
+| `--count <N>` | Only process/restore this many emails |
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
