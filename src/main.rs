@@ -1636,36 +1636,26 @@ fn spawn_imap_worker(
                     let _ = resp_tx.send(ImapResponse::MultiDeleteResult(result));
                 }
                 ImapCommand::RestoreEmails(restore_ops) => {
-                    const BATCH_SIZE: usize = 250;
-
                     let total = restore_ops.len();
-                    debug_log!(
-                        "RestoreEmails: starting restore of {} emails in batches of {}",
-                        total,
-                        BATCH_SIZE
-                    );
                     let mut result = Ok(());
-                    let mut processed = 0;
-                    let restore_start = Instant::now();
-
-                    for (batch_num, chunk) in restore_ops.chunks(BATCH_SIZE).enumerate() {
-                        debug_log!(
-                            "RestoreEmails: processing batch {} ({} emails, {}/{} total)",
-                            batch_num + 1,
-                            chunk.len(),
-                            processed + chunk.len(),
-                            total
-                        );
-                        let batch_start = Instant::now();
-
+                    for (i, (message_id, current_folder, dest_folder)) in
+                        restore_ops.iter().enumerate()
+                    {
+                        // Send progress update
                         let _ = resp_tx.send(ImapResponse::Progress(
-                            processed + chunk.len(),
+                            i + 1,
                             total,
                             "Restoring".to_string(),
                         ));
+                        // Restore single email with retry
+                        let single_restore = [(
+                            message_id.clone(),
+                            current_folder.clone(),
+                            dest_folder.clone(),
+                        )];
                         let resp_tx_retry = resp_tx.clone();
-                        let chunk_result = retry_with_backoff(
-                            || client.restore_emails(chunk),
+                        let restore_result = retry_with_backoff(
+                            || client.restore_emails(&single_restore),
                             |attempt| {
                                 let _ = resp_tx_retry.send(ImapResponse::Retrying {
                                     attempt,
@@ -1674,24 +1664,11 @@ fn spawn_imap_worker(
                                 });
                             },
                         );
-                        if let Err(e) = chunk_result {
-                            debug_log!("RestoreEmails: batch {} failed: {}", batch_num + 1, e);
+                        if let Err(e) = restore_result {
                             result = Err(e);
                             break;
                         }
-                        debug_log!(
-                            "RestoreEmails: batch {} completed in {:.2}s",
-                            batch_num + 1,
-                            batch_start.elapsed().as_secs_f64()
-                        );
-                        processed += chunk.len();
                     }
-                    debug_log!(
-                        "RestoreEmails: finished restoring {} emails in {:.2}s (result: {})",
-                        processed,
-                        restore_start.elapsed().as_secs_f64(),
-                        if result.is_ok() { "success" } else { "failed" }
-                    );
                     let _ = resp_tx.send(ImapResponse::RestoreResult(result));
                 }
                 ImapCommand::Shutdown => {
