@@ -6,31 +6,138 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::email::{Email, EmailBuilder};
 
+use std::collections::HashMap;
+
 /// Trait for email operations - allows mocking in tests
 #[cfg_attr(test, mockall::automock)]
 pub trait EmailClient {
     /// Archives an email (removes from inbox)
-    fn archive_email(&mut self, email_id: &str, folder: &str) -> Result<()>;
+    /// Returns the destination UID if COPYUID is supported by the server
+    fn archive_email(&mut self, email_id: &str, folder: &str) -> Result<Option<u32>>;
 
     /// Deletes an email (moves to trash)
-    fn delete_email(&mut self, email_id: &str, folder: &str) -> Result<()>;
+    /// Returns the destination UID if COPYUID is supported by the server
+    fn delete_email(&mut self, email_id: &str, folder: &str) -> Result<Option<u32>>;
 
     /// Archives a batch of emails from a single folder (moves to All Mail)
     /// UIDs should be from the same folder for efficiency
-    fn archive_batch(&mut self, uids: &[String], folder: &str) -> Result<()>;
+    /// Returns a mapping of source UID -> destination UID (empty if COPYUID not supported)
+    fn archive_batch(&mut self, uids: &[String], folder: &str) -> Result<HashMap<String, u32>>;
 
     /// Deletes a batch of emails from a single folder (moves to Trash)
     /// UIDs should be from the same folder for efficiency
-    fn delete_batch(&mut self, uids: &[String], folder: &str) -> Result<()>;
+    /// Returns a mapping of source UID -> destination UID (empty if COPYUID not supported)
+    fn delete_batch(&mut self, uids: &[String], folder: &str) -> Result<HashMap<String, u32>>;
 
-    /// Restores emails to their original folders by searching for them by Message-ID
-    /// Takes a list of (message_id, current_folder, destination_folder) tuples
-    fn restore_emails(&mut self, emails: &[(String, String, String)]) -> Result<()>;
+    /// Restores emails to their original folders
+    /// Takes a list of (message_id, dest_uid, current_folder, destination_folder) tuples
+    /// Uses dest_uid for fast restore if available, falls back to Message-ID search otherwise
+    fn restore_emails(
+        &mut self,
+        emails: &[(Option<String>, Option<u32>, String, String)],
+    ) -> Result<()>;
 }
 
 /// IMAP client for Gmail access
 pub struct ImapClient {
     session: Session<Box<dyn ImapConnection>>,
+}
+
+/// Parses a COPYUID response to extract the mapping from source UIDs to destination UIDs
+///
+/// The COPYUID response format from RFC 4315 is:
+/// COPYUID <uidvalidity> <source-uid-set> <dest-uid-set>
+///
+/// Returns a HashMap mapping source UID (as String) to destination UID
+fn parse_copyuid_response(response: &[u8]) -> HashMap<String, u32> {
+    use imap_proto::parser::parse_response;
+    use imap_proto::types::{Response, ResponseCode};
+
+    let mut uid_map = HashMap::new();
+
+    // Parse response line by line (IMAP responses may have multiple lines)
+    let mut remaining = response;
+    while !remaining.is_empty() {
+        match parse_response(remaining) {
+            Ok((rest, resp)) => {
+                // Check for Done response with COPYUID code (tagged response like "a1 OK [COPYUID ...]")
+                if let Response::Done {
+                    code: Some(ResponseCode::CopyUid(_, source_uids, dest_uids)),
+                    ..
+                } = resp
+                {
+                    // Expand UID sets into individual UIDs
+                    let sources: Vec<u32> = expand_uid_set(&source_uids);
+                    let dests: Vec<u32> = expand_uid_set(&dest_uids);
+
+                    // Build the mapping
+                    for (src, dst) in sources.iter().zip(dests.iter()) {
+                        uid_map.insert(src.to_string(), *dst);
+                    }
+                    break;
+                }
+                remaining = rest;
+            }
+            Err(_) => {
+                // If parsing fails, try skipping to the next line
+                if let Some(pos) = remaining.iter().position(|&b| b == b'\n') {
+                    remaining = &remaining[pos + 1..];
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    uid_map
+}
+
+/// Expands a UID set (which may contain ranges) into individual UIDs
+fn expand_uid_set(uid_set: &[imap_proto::types::UidSetMember]) -> Vec<u32> {
+    use imap_proto::types::UidSetMember;
+
+    let mut uids = Vec::new();
+    for member in uid_set {
+        match member {
+            UidSetMember::Uid(uid) => uids.push(*uid),
+            UidSetMember::UidRange(range) => {
+                for uid in range.clone() {
+                    uids.push(uid);
+                }
+            }
+        }
+    }
+    uids
+}
+
+/// Sends a UID MOVE command and returns the COPYUID mapping if available
+///
+/// This uses the IMAP MOVE extension (RFC 6851) combined with UIDPLUS (RFC 4315)
+/// to atomically move messages and get their new UIDs in the destination folder.
+fn uid_move_with_copyuid(
+    session: &mut Session<Box<dyn ImapConnection>>,
+    uids: &str,
+    dest_mailbox: &str,
+) -> Result<HashMap<String, u32>> {
+    // Escape the mailbox name if it contains special characters
+    let escaped_mailbox = if dest_mailbox.contains(' ') || dest_mailbox.contains('"') {
+        format!("\"{}\"", dest_mailbox.replace('"', "\\\""))
+    } else {
+        dest_mailbox.to_string()
+    };
+
+    let command = format!("UID MOVE {} {}", uids, escaped_mailbox);
+    crate::debug_log!("uid_move_with_copyuid: {}", command);
+
+    // Use run() to get the full response including the tagged OK line with COPYUID
+    let (response, tagged_start) = session.run(&command).context("UID MOVE command failed")?;
+
+    // Parse the tagged response portion (which contains COPYUID)
+    let tagged_response = &response[tagged_start..];
+    let uid_map = parse_copyuid_response(tagged_response);
+    crate::debug_log!("uid_move_with_copyuid: got {} UID mappings", uid_map.len());
+
+    Ok(uid_map)
 }
 
 impl ImapClient {
@@ -201,35 +308,35 @@ impl ImapClient {
 }
 
 impl EmailClient for ImapClient {
-    fn archive_email(&mut self, uid: &str, folder: &str) -> Result<()> {
+    fn archive_email(&mut self, uid: &str, folder: &str) -> Result<Option<u32>> {
         self.session
             .select(folder)
             .context(format!("Failed to select {}", folder))?;
 
-        // Move to All Mail (Gmail's archive)
-        self.session
-            .uid_mv(uid, "[Gmail]/All Mail")
+        // Move to All Mail (Gmail's archive) and get destination UID
+        let uid_map = uid_move_with_copyuid(&mut self.session, uid, "[Gmail]/All Mail")
             .context("Failed to archive email")?;
 
-        Ok(())
+        // Return the destination UID if available
+        Ok(uid_map.get(uid).copied())
     }
 
-    fn delete_email(&mut self, uid: &str, folder: &str) -> Result<()> {
+    fn delete_email(&mut self, uid: &str, folder: &str) -> Result<Option<u32>> {
         self.session
             .select(folder)
             .context(format!("Failed to select {}", folder))?;
 
-        // Move to Trash
-        self.session
-            .uid_mv(uid, "[Gmail]/Trash")
+        // Move to Trash and get destination UID
+        let uid_map = uid_move_with_copyuid(&mut self.session, uid, "[Gmail]/Trash")
             .context("Failed to delete email")?;
 
-        Ok(())
+        // Return the destination UID if available
+        Ok(uid_map.get(uid).copied())
     }
 
-    fn archive_batch(&mut self, uids: &[String], folder: &str) -> Result<()> {
+    fn archive_batch(&mut self, uids: &[String], folder: &str) -> Result<HashMap<String, u32>> {
         if uids.is_empty() {
-            return Ok(());
+            return Ok(HashMap::new());
         }
 
         crate::debug_log!(
@@ -243,17 +350,16 @@ impl EmailClient for ImapClient {
             .context(format!("Failed to select {}", folder))?;
 
         let uid_sequence = uids.join(",");
-        self.session
-            .uid_mv(&uid_sequence, "[Gmail]/All Mail")
+        let uid_map = uid_move_with_copyuid(&mut self.session, &uid_sequence, "[Gmail]/All Mail")
             .context("Failed to archive emails")?;
 
-        crate::debug_log!("archive_batch: done");
-        Ok(())
+        crate::debug_log!("archive_batch: done, got {} UID mappings", uid_map.len());
+        Ok(uid_map)
     }
 
-    fn delete_batch(&mut self, uids: &[String], folder: &str) -> Result<()> {
+    fn delete_batch(&mut self, uids: &[String], folder: &str) -> Result<HashMap<String, u32>> {
         if uids.is_empty() {
-            return Ok(());
+            return Ok(HashMap::new());
         }
 
         crate::debug_log!(
@@ -267,52 +373,66 @@ impl EmailClient for ImapClient {
             .context(format!("Failed to select {}", folder))?;
 
         let uid_sequence = uids.join(",");
-        self.session
-            .uid_mv(&uid_sequence, "[Gmail]/Trash")
+        let uid_map = uid_move_with_copyuid(&mut self.session, &uid_sequence, "[Gmail]/Trash")
             .context("Failed to delete emails")?;
 
-        crate::debug_log!("delete_batch: done");
-        Ok(())
+        crate::debug_log!("delete_batch: done, got {} UID mappings", uid_map.len());
+        Ok(uid_map)
     }
 
-    fn restore_emails(&mut self, emails: &[(String, String, String)]) -> Result<()> {
-        use std::collections::HashMap;
+    fn restore_emails(
+        &mut self,
+        emails: &[(Option<String>, Option<u32>, String, String)],
+    ) -> Result<()> {
+        // Track the currently selected folder to minimize folder switches
+        let mut current_selected: Option<&str> = None;
 
-        // Group emails by current folder to minimize folder switches
-        let mut by_folder: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
-        for (message_id, current_folder, dest_folder) in emails {
-            by_folder
-                .entry(current_folder.as_str())
-                .or_default()
-                .push((message_id.as_str(), dest_folder.as_str()));
-        }
+        for (message_id, dest_uid, current_folder, dest_folder) in emails {
+            // Select the folder if needed
+            if current_selected != Some(current_folder.as_str()) {
+                self.session
+                    .select(current_folder)
+                    .context(format!("Failed to select {}", current_folder))?;
+                current_selected = Some(current_folder.as_str());
+            }
 
-        // Process each group
-        for (current_folder, moves) in by_folder {
-            self.session
-                .select(current_folder)
-                .context(format!("Failed to select {}", current_folder))?;
+            // Try fast path using destination UID first
+            if let Some(uid) = dest_uid {
+                crate::debug_log!(
+                    "restore_emails: using fast UID path, moving UID {} to {}",
+                    uid,
+                    dest_folder
+                );
+                self.session
+                    .uid_mv(uid.to_string(), dest_folder)
+                    .context(format!(
+                        "Failed to restore email UID {} to {}",
+                        uid, dest_folder
+                    ))?;
+                continue;
+            }
 
-            for (message_id, dest_folder) in moves {
-                // Search for the email by Message-ID to get its current UID
-                // Gmail assigns new UIDs when emails move folders
-                let search_query = format!("HEADER Message-ID {}", message_id);
+            // Fall back to Message-ID search if no destination UID
+            if let Some(msg_id) = message_id {
+                crate::debug_log!("restore_emails: using Message-ID fallback for {}", msg_id);
+                let search_query = format!("HEADER Message-ID {}", msg_id);
                 let uids = self
                     .session
                     .uid_search(&search_query)
-                    .context(format!("Failed to search for Message-ID {}", message_id))?;
+                    .context(format!("Failed to search for Message-ID {}", msg_id))?;
 
                 if let Some(uid) = uids.into_iter().next() {
                     self.session
                         .uid_mv(uid.to_string(), dest_folder)
                         .context(format!(
                             "Failed to restore email {} to {}",
-                            message_id, dest_folder
+                            msg_id, dest_folder
                         ))?;
                 }
                 // If email not found, it may have been permanently deleted or already moved
                 // Continue with other emails rather than failing entirely
             }
+            // If neither dest_uid nor message_id is available, skip this email
         }
 
         Ok(())
@@ -511,10 +631,11 @@ mod tests {
                 mockall::predicate::eq("email123"),
                 mockall::predicate::eq("INBOX"),
             )
-            .returning(|_, _| Ok(()));
+            .returning(|_, _| Ok(Some(100))); // Returns destination UID
 
         let result = mock.archive_email("email123", "INBOX");
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(100));
     }
 
     #[test]
@@ -526,10 +647,11 @@ mod tests {
                 mockall::predicate::eq("email456"),
                 mockall::predicate::eq("INBOX"),
             )
-            .returning(|_, _| Ok(()));
+            .returning(|_, _| Ok(Some(200))); // Returns destination UID
 
         let result = mock.delete_email("email456", "INBOX");
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(200));
     }
 
     #[test]
@@ -538,18 +660,39 @@ mod tests {
 
         mock.expect_restore_emails().returning(|_| Ok(()));
 
+        // New format: (message_id, dest_uid, current_folder, dest_folder)
         let restore_ops = vec![
             (
-                "123".to_string(),
+                Some("<123@example.com>".to_string()),
+                Some(100),
                 "[Gmail]/All Mail".to_string(),
                 "INBOX".to_string(),
             ),
             (
-                "456".to_string(),
+                Some("<456@example.com>".to_string()),
+                Some(200),
                 "[Gmail]/Trash".to_string(),
                 "INBOX".to_string(),
             ),
         ];
+        let result = mock.restore_emails(&restore_ops);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_mock_client_restore_fallback() {
+        // Test that restore works with only Message-ID (no dest_uid)
+        let mut mock = MockEmailClient::new();
+
+        mock.expect_restore_emails().returning(|_| Ok(()));
+
+        // No dest_uid, should fall back to Message-ID search
+        let restore_ops = vec![(
+            Some("<789@example.com>".to_string()),
+            None,
+            "[Gmail]/All Mail".to_string(),
+            "INBOX".to_string(),
+        )];
         let result = mock.restore_emails(&restore_ops);
         assert!(result.is_ok());
     }
