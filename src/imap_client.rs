@@ -32,9 +32,11 @@ pub trait EmailClient {
     /// Restores emails to their original folders
     /// Takes a list of (message_id, dest_uid, current_folder, destination_folder) tuples
     /// Uses dest_uid for fast restore if available, falls back to Message-ID search otherwise
+    /// The progress_tx channel receives the number of emails processed in each step (delta)
     fn restore_emails(
         &mut self,
         emails: &[(Option<String>, Option<u32>, String, String)],
+        progress_tx: Option<std::sync::mpsc::Sender<usize>>,
     ) -> Result<()>;
 }
 
@@ -108,6 +110,39 @@ fn expand_uid_set(uid_set: &[imap_proto::types::UidSetMember]) -> Vec<u32> {
         }
     }
     uids
+}
+
+/// Extracts contiguous ranges from sorted UIDs
+/// Example: [1,2,3,5,7,8,9] -> [(1,3), (5,5), (7,9)]
+fn extract_uid_ranges(uids: &[u32]) -> Vec<(u32, u32)> {
+    if uids.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sorted = uids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut ranges = Vec::new();
+    let mut start = sorted[0];
+    let mut end = sorted[0];
+
+    for &uid in &sorted[1..] {
+        if uid == end + 1 {
+            // Extend current range
+            end = uid;
+        } else {
+            // Save current range and start a new one
+            ranges.push((start, end));
+            start = uid;
+            end = uid;
+        }
+    }
+
+    // Don't forget the last range
+    ranges.push((start, end));
+
+    ranges
 }
 
 /// Sends a UID MOVE command and returns the COPYUID mapping if available
@@ -383,11 +418,68 @@ impl EmailClient for ImapClient {
     fn restore_emails(
         &mut self,
         emails: &[(Option<String>, Option<u32>, String, String)],
+        progress_tx: Option<std::sync::mpsc::Sender<usize>>,
     ) -> Result<()> {
-        // Track the currently selected folder to minimize folder switches
-        let mut current_selected: Option<&str> = None;
+        // Partition into batch-eligible (have dest_uid) and fallback (need Message-ID search)
+        let mut batch_eligible: Vec<(u32, String, String)> = Vec::new();
+        let mut fallback: Vec<(String, String, String)> = Vec::new();
 
         for (message_id, dest_uid, current_folder, dest_folder) in emails {
+            if let Some(uid) = dest_uid {
+                batch_eligible.push((*uid, current_folder.clone(), dest_folder.clone()));
+            } else if let Some(msg_id) = message_id {
+                fallback.push((msg_id.clone(), current_folder.clone(), dest_folder.clone()));
+            }
+            // Skip if neither dest_uid nor message_id is available
+        }
+
+        // Process batch-eligible emails: group by (current_folder, dest_folder) route
+        let mut routes: HashMap<(String, String), Vec<u32>> = HashMap::new();
+        for (uid, current_folder, dest_folder) in batch_eligible {
+            routes
+                .entry((current_folder, dest_folder))
+                .or_default()
+                .push(uid);
+        }
+
+        // Execute one UID MOVE per contiguous range for each route
+        for ((current_folder, dest_folder), uids) in routes {
+            self.session
+                .select(&current_folder)
+                .context(format!("Failed to select {}", current_folder))?;
+
+            let ranges = extract_uid_ranges(&uids);
+            crate::debug_log!(
+                "restore_emails: batch moving {} UIDs in {} ranges from {} to {}",
+                uids.len(),
+                ranges.len(),
+                current_folder,
+                dest_folder
+            );
+
+            for (start, end) in &ranges {
+                let uid_range = if start == end {
+                    start.to_string()
+                } else {
+                    format!("{}:{}", start, end)
+                };
+
+                crate::debug_log!("restore_emails: UID MOVE {} to {}", uid_range, dest_folder);
+                uid_move_with_copyuid(&mut self.session, &uid_range, &dest_folder).context(
+                    format!("Failed to restore UIDs {} to {}", uid_range, dest_folder),
+                )?;
+
+                // Report progress: count emails in this range
+                let range_count = (end - start + 1) as usize;
+                if let Some(tx) = &progress_tx {
+                    let _ = tx.send(range_count);
+                }
+            }
+        }
+
+        // Process fallback emails individually using Message-ID search
+        let mut current_selected: Option<&str> = None;
+        for (msg_id, current_folder, dest_folder) in &fallback {
             // Select the folder if needed
             if current_selected != Some(current_folder.as_str()) {
                 self.session
@@ -396,43 +488,28 @@ impl EmailClient for ImapClient {
                 current_selected = Some(current_folder.as_str());
             }
 
-            // Try fast path using destination UID first
-            if let Some(uid) = dest_uid {
-                crate::debug_log!(
-                    "restore_emails: using fast UID path, moving UID {} to {}",
-                    uid,
-                    dest_folder
-                );
+            crate::debug_log!("restore_emails: using Message-ID fallback for {}", msg_id);
+            let search_query = format!("HEADER Message-ID {}", msg_id);
+            let uids = self
+                .session
+                .uid_search(&search_query)
+                .context(format!("Failed to search for Message-ID {}", msg_id))?;
+
+            if let Some(uid) = uids.into_iter().next() {
                 self.session
                     .uid_mv(uid.to_string(), dest_folder)
                     .context(format!(
-                        "Failed to restore email UID {} to {}",
-                        uid, dest_folder
+                        "Failed to restore email {} to {}",
+                        msg_id, dest_folder
                     ))?;
-                continue;
             }
+            // If email not found, it may have been permanently deleted or already moved
+            // Continue with other emails rather than failing entirely
 
-            // Fall back to Message-ID search if no destination UID
-            if let Some(msg_id) = message_id {
-                crate::debug_log!("restore_emails: using Message-ID fallback for {}", msg_id);
-                let search_query = format!("HEADER Message-ID {}", msg_id);
-                let uids = self
-                    .session
-                    .uid_search(&search_query)
-                    .context(format!("Failed to search for Message-ID {}", msg_id))?;
-
-                if let Some(uid) = uids.into_iter().next() {
-                    self.session
-                        .uid_mv(uid.to_string(), dest_folder)
-                        .context(format!(
-                            "Failed to restore email {} to {}",
-                            msg_id, dest_folder
-                        ))?;
-                }
-                // If email not found, it may have been permanently deleted or already moved
-                // Continue with other emails rather than failing entirely
+            // Report progress for each fallback email
+            if let Some(tx) = &progress_tx {
+                let _ = tx.send(1);
             }
-            // If neither dest_uid nor message_id is available, skip this email
         }
 
         Ok(())
@@ -658,7 +735,7 @@ mod tests {
     fn test_mock_client_restore() {
         let mut mock = MockEmailClient::new();
 
-        mock.expect_restore_emails().returning(|_| Ok(()));
+        mock.expect_restore_emails().returning(|_, _| Ok(()));
 
         // New format: (message_id, dest_uid, current_folder, dest_folder)
         let restore_ops = vec![
@@ -675,7 +752,7 @@ mod tests {
                 "INBOX".to_string(),
             ),
         ];
-        let result = mock.restore_emails(&restore_ops);
+        let result: Result<()> = mock.restore_emails(&restore_ops, None);
         assert!(result.is_ok());
     }
 
@@ -684,7 +761,7 @@ mod tests {
         // Test that restore works with only Message-ID (no dest_uid)
         let mut mock = MockEmailClient::new();
 
-        mock.expect_restore_emails().returning(|_| Ok(()));
+        mock.expect_restore_emails().returning(|_, _| Ok(()));
 
         // No dest_uid, should fall back to Message-ID search
         let restore_ops = vec![(
@@ -693,7 +770,52 @@ mod tests {
             "[Gmail]/All Mail".to_string(),
             "INBOX".to_string(),
         )];
-        let result = mock.restore_emails(&restore_ops);
+        let result: Result<()> = mock.restore_emails(&restore_ops, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extract_uid_ranges_empty() {
+        let ranges = extract_uid_ranges(&[]);
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn test_extract_uid_ranges_single() {
+        let ranges = extract_uid_ranges(&[42]);
+        assert_eq!(ranges, vec![(42, 42)]);
+    }
+
+    #[test]
+    fn test_extract_uid_ranges_consecutive() {
+        let ranges = extract_uid_ranges(&[1, 2, 3, 4, 5]);
+        assert_eq!(ranges, vec![(1, 5)]);
+    }
+
+    #[test]
+    fn test_extract_uid_ranges_scattered() {
+        let ranges = extract_uid_ranges(&[1, 3, 5, 7, 9]);
+        assert_eq!(ranges, vec![(1, 1), (3, 3), (5, 5), (7, 7), (9, 9)]);
+    }
+
+    #[test]
+    fn test_extract_uid_ranges_mixed() {
+        // Example from plan: [1,2,3,5,7,8,9] -> [(1,3), (5,5), (7,9)]
+        let ranges = extract_uid_ranges(&[1, 2, 3, 5, 7, 8, 9]);
+        assert_eq!(ranges, vec![(1, 3), (5, 5), (7, 9)]);
+    }
+
+    #[test]
+    fn test_extract_uid_ranges_unsorted() {
+        // Input doesn't need to be sorted
+        let ranges = extract_uid_ranges(&[5, 1, 3, 2, 4]);
+        assert_eq!(ranges, vec![(1, 5)]);
+    }
+
+    #[test]
+    fn test_extract_uid_ranges_with_duplicates() {
+        // Duplicates should be handled
+        let ranges = extract_uid_ranges(&[1, 1, 2, 2, 3, 5, 5]);
+        assert_eq!(ranges, vec![(1, 3), (5, 5)]);
     }
 }
