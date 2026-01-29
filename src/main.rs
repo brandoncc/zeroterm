@@ -1727,39 +1727,22 @@ fn spawn_imap_worker(
                 }
                 ImapCommand::RestoreEmails(restore_ops) => {
                     let total = restore_ops.len();
-                    let mut result = Ok(());
-                    for (i, (message_id, dest_uid, current_folder, dest_folder)) in
-                        restore_ops.iter().enumerate()
-                    {
-                        // Send progress update
-                        let _ = resp_tx.send(ImapResponse::Progress(
-                            i + 1,
-                            total,
-                            "Restoring".to_string(),
-                        ));
-                        // Restore single email with retry
-                        let single_restore = [(
-                            message_id.clone(),
-                            *dest_uid,
-                            current_folder.clone(),
-                            dest_folder.clone(),
-                        )];
-                        let resp_tx_retry = resp_tx.clone();
-                        let restore_result = retry_with_backoff(
-                            || client.restore_emails(&single_restore),
-                            |attempt| {
-                                let _ = resp_tx_retry.send(ImapResponse::Retrying {
-                                    attempt,
-                                    max_attempts: MAX_RETRIES,
-                                    action: "restore".to_string(),
-                                });
-                            },
-                        );
-                        if let Err(e) = restore_result {
-                            result = Err(e);
-                            break;
-                        }
-                    }
+                    // Send initial progress
+                    let _ = resp_tx.send(ImapResponse::Progress(1, total, "Restoring".to_string()));
+
+                    // Batch restore with retry
+                    let resp_tx_retry = resp_tx.clone();
+                    let result = retry_with_backoff(
+                        || client.restore_emails(&restore_ops),
+                        |attempt| {
+                            let _ = resp_tx_retry.send(ImapResponse::Retrying {
+                                attempt,
+                                max_attempts: MAX_RETRIES,
+                                action: "restore".to_string(),
+                            });
+                        },
+                    );
+
                     let _ = resp_tx.send(ImapResponse::RestoreResult(result));
                 }
                 ImapCommand::Shutdown => {
