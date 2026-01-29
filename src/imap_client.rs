@@ -32,9 +32,11 @@ pub trait EmailClient {
     /// Restores emails to their original folders
     /// Takes a list of (message_id, dest_uid, current_folder, destination_folder) tuples
     /// Uses dest_uid for fast restore if available, falls back to Message-ID search otherwise
+    /// The progress_tx channel receives the number of emails processed in each step (delta)
     fn restore_emails(
         &mut self,
         emails: &[(Option<String>, Option<u32>, String, String)],
+        progress_tx: Option<std::sync::mpsc::Sender<usize>>,
     ) -> Result<()>;
 }
 
@@ -416,6 +418,7 @@ impl EmailClient for ImapClient {
     fn restore_emails(
         &mut self,
         emails: &[(Option<String>, Option<u32>, String, String)],
+        progress_tx: Option<std::sync::mpsc::Sender<usize>>,
     ) -> Result<()> {
         // Partition into batch-eligible (have dest_uid) and fallback (need Message-ID search)
         let mut batch_eligible: Vec<(u32, String, String)> = Vec::new();
@@ -454,7 +457,7 @@ impl EmailClient for ImapClient {
                 dest_folder
             );
 
-            for (start, end) in ranges {
+            for (start, end) in &ranges {
                 let uid_range = if start == end {
                     start.to_string()
                 } else {
@@ -465,6 +468,12 @@ impl EmailClient for ImapClient {
                 uid_move_with_copyuid(&mut self.session, &uid_range, &dest_folder).context(
                     format!("Failed to restore UIDs {} to {}", uid_range, dest_folder),
                 )?;
+
+                // Report progress: count emails in this range
+                let range_count = (end - start + 1) as usize;
+                if let Some(tx) = &progress_tx {
+                    let _ = tx.send(range_count);
+                }
             }
         }
 
@@ -496,6 +505,11 @@ impl EmailClient for ImapClient {
             }
             // If email not found, it may have been permanently deleted or already moved
             // Continue with other emails rather than failing entirely
+
+            // Report progress for each fallback email
+            if let Some(tx) = &progress_tx {
+                let _ = tx.send(1);
+            }
         }
 
         Ok(())
@@ -721,7 +735,7 @@ mod tests {
     fn test_mock_client_restore() {
         let mut mock = MockEmailClient::new();
 
-        mock.expect_restore_emails().returning(|_| Ok(()));
+        mock.expect_restore_emails().returning(|_, _| Ok(()));
 
         // New format: (message_id, dest_uid, current_folder, dest_folder)
         let restore_ops = vec![
@@ -738,7 +752,7 @@ mod tests {
                 "INBOX".to_string(),
             ),
         ];
-        let result = mock.restore_emails(&restore_ops);
+        let result: Result<()> = mock.restore_emails(&restore_ops, None);
         assert!(result.is_ok());
     }
 
@@ -747,7 +761,7 @@ mod tests {
         // Test that restore works with only Message-ID (no dest_uid)
         let mut mock = MockEmailClient::new();
 
-        mock.expect_restore_emails().returning(|_| Ok(()));
+        mock.expect_restore_emails().returning(|_, _| Ok(()));
 
         // No dest_uid, should fall back to Message-ID search
         let restore_ops = vec![(
@@ -756,7 +770,7 @@ mod tests {
             "[Gmail]/All Mail".to_string(),
             "INBOX".to_string(),
         )];
-        let result = mock.restore_emails(&restore_ops);
+        let result: Result<()> = mock.restore_emails(&restore_ops, None);
         assert!(result.is_ok());
     }
 

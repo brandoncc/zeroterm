@@ -1727,13 +1727,28 @@ fn spawn_imap_worker(
                 }
                 ImapCommand::RestoreEmails(restore_ops) => {
                     let total = restore_ops.len();
-                    // Send initial progress
-                    let _ = resp_tx.send(ImapResponse::Progress(1, total, "Restoring".to_string()));
+
+                    // Create a channel for progress updates
+                    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+                    let resp_tx_progress = resp_tx.clone();
+
+                    // Spawn a thread to forward progress updates
+                    let progress_thread = std::thread::spawn(move || {
+                        let mut processed = 0usize;
+                        while let Ok(delta) = progress_rx.recv() {
+                            processed += delta;
+                            let _ = resp_tx_progress.send(ImapResponse::Progress(
+                                processed,
+                                total,
+                                "Restoring".to_string(),
+                            ));
+                        }
+                    });
 
                     // Batch restore with retry
                     let resp_tx_retry = resp_tx.clone();
                     let result = retry_with_backoff(
-                        || client.restore_emails(&restore_ops),
+                        || client.restore_emails(&restore_ops, Some(progress_tx.clone())),
                         |attempt| {
                             let _ = resp_tx_retry.send(ImapResponse::Retrying {
                                 attempt,
@@ -1742,6 +1757,10 @@ fn spawn_imap_worker(
                             });
                         },
                     );
+
+                    // Drop sender to signal completion, then wait for progress thread
+                    drop(progress_tx);
+                    let _ = progress_thread.join();
 
                     let _ = resp_tx.send(ImapResponse::RestoreResult(result));
                 }
