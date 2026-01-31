@@ -193,6 +193,7 @@ fn main() -> Result<()> {
             account,
             cfg.protect_threads,
             cfg.parallel_connections,
+            cfg.advance_on_select,
         )
     } else {
         Ok(())
@@ -352,8 +353,9 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
     let mut pending_op: Option<DemoPendingOp> = None;
     let mut op_start_time: Option<Instant> = None;
 
-    // Demo mode uses the default protect_threads setting (true)
+    // Demo mode uses the default settings
     let protect_threads = true;
+    let advance_on_select = true;
 
     // Main event loop
     loop {
@@ -721,13 +723,19 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                             "Cannot select individual emails in thread view. Press Enter to open the thread."
                                 .to_string(),
                         );
-                    } else if app.view == View::EmailList
-                        && let app::SelectionResult::IsThread = app.toggle_email_selection()
-                    {
-                        ui_state.set_status(
-                            "Threads must be handled individually. Press Enter to view this thread."
-                                .to_string(),
-                        );
+                    } else if app.view == View::EmailList {
+                        match app.toggle_email_selection() {
+                            app::SelectionResult::IsThread => {
+                                ui_state.set_status(
+                                    "Threads must be handled individually. Press Enter to view this thread."
+                                        .to_string(),
+                                );
+                            }
+                            app::SelectionResult::Toggled if advance_on_select => {
+                                app.select_next();
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}
@@ -1781,6 +1789,7 @@ fn run_app(
     account: (String, AccountConfig),
     protect_threads: bool,
     parallel_connections: usize,
+    advance_on_select: bool,
 ) -> Result<()> {
     let (account_name, account_config) = account;
     let user_email = account_config.email.clone();
@@ -2445,13 +2454,19 @@ fn run_app(
                             "Cannot select individual emails in thread view. Press Enter to open the thread."
                                 .to_string(),
                         );
-                    } else if app.view == View::EmailList
-                        && let app::SelectionResult::IsThread = app.toggle_email_selection()
-                    {
-                        ui_state.set_status(
-                            "Threads must be handled individually. Press Enter to view this thread."
-                                .to_string(),
-                        );
+                    } else if app.view == View::EmailList {
+                        match app.toggle_email_selection() {
+                            app::SelectionResult::IsThread => {
+                                ui_state.set_status(
+                                    "Threads must be handled individually. Press Enter to view this thread."
+                                        .to_string(),
+                                );
+                            }
+                            app::SelectionResult::Toggled if advance_on_select => {
+                                app.select_next();
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}
