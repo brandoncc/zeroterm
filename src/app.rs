@@ -22,6 +22,18 @@ pub enum View {
     UndoHistory,
 }
 
+/// Filter for which emails/threads to display
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ThreadFilter {
+    /// Show all emails (no filtering)
+    #[default]
+    All,
+    /// Show only emails that are part of multi-message threads
+    OnlyThreads,
+    /// Show only emails that are NOT part of multi-message threads
+    NoThreads,
+}
+
 /// Result of attempting to toggle email selection
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SelectionResult {
@@ -114,8 +126,8 @@ pub struct App {
     multi_message_threads: HashSet<String>,
     /// The user's email address (used to filter out sent emails from groups)
     user_email: Option<String>,
-    /// When true, only show emails that are part of multi-message threads
-    pub filter_to_threads: bool,
+    /// Filter for which threads to display
+    pub thread_filter: ThreadFilter,
     /// History of undoable actions (newest first)
     pub undo_history: Vec<UndoEntry>,
     /// Selected index in undo history view
@@ -148,7 +160,7 @@ impl App {
             emails: Vec::new(),
             multi_message_threads: HashSet::new(),
             user_email: None,
-            filter_to_threads: false,
+            thread_filter: ThreadFilter::All,
             undo_history: Vec::new(),
             selected_undo: 0,
             previous_view: None,
@@ -414,12 +426,21 @@ impl App {
         }
     }
 
+    /// Checks if a group matches the current filter
+    fn group_matches_filter(&self, group: &EmailGroup) -> bool {
+        match self.thread_filter {
+            ThreadFilter::All => true,
+            ThreadFilter::OnlyThreads => self.group_has_multi_message_threads(group),
+            ThreadFilter::NoThreads => self.group_has_single_message_threads(group),
+        }
+    }
+
     /// Selects the next group in the list
     fn select_next_group(&mut self) {
-        if self.filter_to_threads {
-            // Find next group that has multi-message threads
+        if self.thread_filter != ThreadFilter::All {
+            // Find next group that matches the filter
             for i in (self.selected_group + 1)..self.groups.len() {
-                if self.group_has_multi_message_threads(&self.groups[i]) {
+                if self.group_matches_filter(&self.groups[i]) {
                     self.selected_group = i;
                     return;
                 }
@@ -431,10 +452,10 @@ impl App {
 
     /// Selects the previous group in the list
     fn select_previous_group(&mut self) {
-        if self.filter_to_threads {
-            // Find previous group that has multi-message threads
+        if self.thread_filter != ThreadFilter::All {
+            // Find previous group that matches the filter
             for i in (0..self.selected_group).rev() {
-                if self.group_has_multi_message_threads(&self.groups[i]) {
+                if self.group_matches_filter(&self.groups[i]) {
                     self.selected_group = i;
                     return;
                 }
@@ -675,11 +696,23 @@ impl App {
             .any(|email| self.thread_has_multiple_messages(&email.thread_id))
     }
 
-    /// Toggles the thread filter (only show emails in multi-message threads)
-    pub fn toggle_thread_filter(&mut self) {
-        self.filter_to_threads = !self.filter_to_threads;
+    /// Checks if any email in a group is a single-message thread (not part of multi-message thread)
+    pub fn group_has_single_message_threads(&self, group: &EmailGroup) -> bool {
+        group
+            .emails
+            .iter()
+            .any(|email| !self.thread_has_multiple_messages(&email.thread_id))
+    }
 
-        if self.filter_to_threads {
+    /// Cycles the thread filter through: All -> OnlyThreads -> NoThreads -> All
+    pub fn toggle_thread_filter(&mut self) {
+        self.thread_filter = match self.thread_filter {
+            ThreadFilter::All => ThreadFilter::OnlyThreads,
+            ThreadFilter::OnlyThreads => ThreadFilter::NoThreads,
+            ThreadFilter::NoThreads => ThreadFilter::All,
+        };
+
+        if self.thread_filter != ThreadFilter::All {
             // Only adjust group selection in GroupList view
             if self.view == View::GroupList {
                 let filtered_groups = self.filtered_groups();
@@ -710,42 +743,124 @@ impl App {
         }
     }
 
-    /// Returns threads in the current group, filtered if filter_to_threads is active
+    /// Returns threads in the current group, filtered based on thread_filter setting
     pub fn filtered_threads_in_current_group(&self) -> Vec<&Email> {
         let Some(group) = self.current_group() else {
             return Vec::new();
         };
-        if self.filter_to_threads {
-            group
+        match self.thread_filter {
+            ThreadFilter::All => group.threads(),
+            ThreadFilter::OnlyThreads => group
                 .threads()
                 .into_iter()
                 .filter(|e| self.multi_message_threads.contains(&e.thread_id))
-                .collect()
-        } else {
-            group.threads()
+                .collect(),
+            ThreadFilter::NoThreads => group
+                .threads()
+                .into_iter()
+                .filter(|e| !self.multi_message_threads.contains(&e.thread_id))
+                .collect(),
         }
     }
 
-    /// Returns groups filtered if filter_to_threads is active (only groups with multi-message threads)
+    /// Returns groups filtered based on thread_filter setting
     pub fn filtered_groups(&self) -> Vec<&EmailGroup> {
-        if self.filter_to_threads {
-            self.groups
+        match self.thread_filter {
+            ThreadFilter::All => self.groups.iter().collect(),
+            ThreadFilter::OnlyThreads => self
+                .groups
                 .iter()
                 .filter(|g| self.group_has_multi_message_threads(g))
-                .collect()
-        } else {
-            self.groups.iter().collect()
+                .collect(),
+            ThreadFilter::NoThreads => self
+                .groups
+                .iter()
+                .filter(|g| self.group_has_single_message_threads(g))
+                .collect(),
         }
     }
 
-    /// Counts all emails across all threads that a group participates in
-    /// (includes emails from other senders in multi-sender threads)
-    pub fn total_thread_emails_for_group(&self, group: &EmailGroup) -> usize {
-        let thread_ids: HashSet<&str> = group.emails.iter().map(|e| e.thread_id.as_str()).collect();
-        self.emails
+    /// Returns all emails in the current group that match the current filter.
+    /// Unlike filtered_threads_in_current_group which returns one email per thread,
+    /// this returns ALL emails that match (for bulk operations).
+    pub fn filtered_emails_in_current_group(&self) -> Vec<&Email> {
+        let Some(group) = self.current_group() else {
+            return Vec::new();
+        };
+        match self.thread_filter {
+            ThreadFilter::All => group.emails.iter().collect(),
+            ThreadFilter::OnlyThreads => group
+                .emails
+                .iter()
+                .filter(|e| self.multi_message_threads.contains(&e.thread_id))
+                .collect(),
+            ThreadFilter::NoThreads => group
+                .emails
+                .iter()
+                .filter(|e| !self.multi_message_threads.contains(&e.thread_id))
+                .collect(),
+        }
+    }
+
+    /// Returns the count of filtered emails in the current group
+    pub fn filtered_email_count(&self) -> usize {
+        self.filtered_emails_in_current_group().len()
+    }
+
+    /// Returns clones of the filtered emails in the current group (for demo mode)
+    pub fn filtered_emails_cloned(&self) -> Vec<Email> {
+        self.filtered_emails_in_current_group()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Checks if the filtered emails in the current group contain any multi-message threads
+    pub fn filtered_has_multi_message_threads(&self) -> bool {
+        self.filtered_emails_in_current_group()
             .iter()
-            .filter(|e| thread_ids.contains(e.thread_id.as_str()))
-            .count()
+            .any(|e| self.multi_message_threads.contains(&e.thread_id))
+    }
+
+    /// Returns the filtered email count for a specific group
+    pub fn filtered_email_count_for_group(&self, group: &EmailGroup) -> usize {
+        match self.thread_filter {
+            ThreadFilter::All => group.count(),
+            ThreadFilter::OnlyThreads => group
+                .emails
+                .iter()
+                .filter(|e| self.multi_message_threads.contains(&e.thread_id))
+                .count(),
+            ThreadFilter::NoThreads => group
+                .emails
+                .iter()
+                .filter(|e| !self.multi_message_threads.contains(&e.thread_id))
+                .count(),
+        }
+    }
+
+    /// Returns the filtered thread count for a specific group
+    pub fn filtered_thread_count_for_group(&self, group: &EmailGroup) -> usize {
+        match self.thread_filter {
+            ThreadFilter::All => group.thread_count(),
+            ThreadFilter::OnlyThreads => {
+                let thread_ids: HashSet<&str> = group
+                    .emails
+                    .iter()
+                    .filter(|e| self.multi_message_threads.contains(&e.thread_id))
+                    .map(|e| e.thread_id.as_str())
+                    .collect();
+                thread_ids.len()
+            }
+            ThreadFilter::NoThreads => {
+                // In NoThreads mode, each email is its own "thread" (single messages)
+                group
+                    .emails
+                    .iter()
+                    .filter(|e| !self.multi_message_threads.contains(&e.thread_id))
+                    .count()
+            }
+        }
     }
 
     /// Removes an email by ID and regroups
@@ -791,12 +906,14 @@ impl App {
         self.selected_thread_email = None;
     }
 
-    /// Removes all emails in the current group (only emails from this sender)
+    /// Removes all emails in the current group that match the current filter
     pub fn remove_current_group_emails(&mut self) {
-        if let Some(group) = self.groups.get(self.selected_group) {
-            let ids_to_remove: Vec<String> = group.emails.iter().map(|e| e.id.clone()).collect();
-            self.emails.retain(|e| !ids_to_remove.contains(&e.id));
-        }
+        let ids_to_remove: Vec<String> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        self.emails.retain(|e| !ids_to_remove.contains(&e.id));
         self.regroup();
 
         // If we removed the last group, adjust selection
@@ -818,16 +935,12 @@ impl App {
         self.regroup();
     }
 
-    /// Gets all email IDs and source folders in the current group
+    /// Gets all email IDs and source folders in the current group (respects filter)
     pub fn current_group_email_ids(&self) -> Vec<(String, String)> {
-        self.current_group()
-            .map(|g| {
-                g.emails
-                    .iter()
-                    .map(|e| (e.id.clone(), e.source_folder.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.filtered_emails_in_current_group()
+            .iter()
+            .map(|e| (e.id.clone(), e.source_folder.clone()))
+            .collect()
     }
 
     /// Gets all email IDs and source folders in the current thread
@@ -891,43 +1004,33 @@ impl App {
         !self.selected_emails.is_empty()
     }
 
-    /// Returns the selected emails as (id, source_folder) pairs
+    /// Returns the selected emails as (id, source_folder) pairs.
+    /// Respects the current filter - only returns selected emails that are visible.
     pub fn selected_email_ids(&self) -> Vec<(String, String)> {
-        self.current_group()
-            .map(|g| {
-                g.emails
-                    .iter()
-                    .filter(|e| self.selected_emails.contains(&e.id))
-                    .map(|e| (e.id.clone(), e.source_folder.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.filtered_emails_in_current_group()
+            .iter()
+            .filter(|e| self.selected_emails.contains(&e.id))
+            .map(|e| (e.id.clone(), e.source_folder.clone()))
+            .collect()
     }
 
     /// Returns the selected emails' data for undo support: (uid, message_id, source_folder)
-    /// This returns all selected emails with their UIDs and optional Message-IDs
+    /// Respects the current filter - only returns selected emails that are visible.
     pub fn selected_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
-        self.current_group()
-            .map(|g| {
-                g.emails
-                    .iter()
-                    .filter(|e| self.selected_emails.contains(&e.id))
-                    .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.filtered_emails_in_current_group()
+            .iter()
+            .filter(|e| self.selected_emails.contains(&e.id))
+            .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
+            .collect()
     }
 
     /// Returns the current group's emails' data for undo support: (uid, message_id, source_folder)
+    /// Respects the current filter setting.
     pub fn current_group_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
-        self.current_group()
-            .map(|g| {
-                g.emails
-                    .iter()
-                    .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.filtered_emails_in_current_group()
+            .iter()
+            .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
+            .collect()
     }
 
     /// Returns the current thread's emails' data for undo support: (uid, message_id, source_folder)
@@ -938,17 +1041,14 @@ impl App {
             .collect()
     }
 
-    /// Returns clones of the selected Email objects
+    /// Returns clones of the selected Email objects.
+    /// Respects the current filter - only returns selected emails that are visible.
     pub fn selected_emails_cloned(&self) -> Vec<Email> {
-        self.current_group()
-            .map(|g| {
-                g.emails
-                    .iter()
-                    .filter(|e| self.selected_emails.contains(&e.id))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.filtered_emails_in_current_group()
+            .into_iter()
+            .filter(|e| self.selected_emails.contains(&e.id))
+            .cloned()
+            .collect()
     }
 
     /// Restore selection state (used for search restore on no match)
@@ -1869,21 +1969,28 @@ mod tests {
         ]);
 
         app.enter(); // Enter email list
-        assert!(!app.filter_to_threads);
+        assert_eq!(app.thread_filter, ThreadFilter::All);
 
         // Without filter, should see 2 threads
         assert_eq!(app.filtered_threads_in_current_group().len(), 2);
 
-        // Toggle filter on
+        // Toggle to OnlyThreads
         app.toggle_thread_filter();
-        assert!(app.filter_to_threads);
+        assert_eq!(app.thread_filter, ThreadFilter::OnlyThreads);
 
-        // With filter, should only see 1 thread (thread_a with multiple messages)
+        // With OnlyThreads filter, should only see 1 thread (thread_a with multiple messages)
         assert_eq!(app.filtered_threads_in_current_group().len(), 1);
 
-        // Toggle filter off
+        // Toggle to NoThreads
         app.toggle_thread_filter();
-        assert!(!app.filter_to_threads);
+        assert_eq!(app.thread_filter, ThreadFilter::NoThreads);
+
+        // With NoThreads filter, should only see 1 thread (thread_b with single message)
+        assert_eq!(app.filtered_threads_in_current_group().len(), 1);
+
+        // Toggle back to All
+        app.toggle_thread_filter();
+        assert_eq!(app.thread_filter, ThreadFilter::All);
         assert_eq!(app.filtered_threads_in_current_group().len(), 2);
     }
 
@@ -1912,9 +2019,9 @@ mod tests {
         // Verify unfiltered state: 4 threads total
         assert_eq!(app.filtered_threads_in_current_group().len(), 4);
 
-        // Enable thread filter
+        // Enable thread filter (OnlyThreads)
         app.toggle_thread_filter();
-        assert!(app.filter_to_threads);
+        assert_eq!(app.thread_filter, ThreadFilter::OnlyThreads);
 
         // With filter, should only see 2 threads (the multi-message ones)
         assert_eq!(app.filtered_threads_in_current_group().len(), 2);

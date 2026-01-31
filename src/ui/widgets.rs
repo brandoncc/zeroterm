@@ -580,10 +580,10 @@ impl Widget for GroupListWidget<'_> {
             GroupMode::BySenderEmail => "email",
             GroupMode::ByDomain => "domain",
         };
-        let filter_indicator = if self.app.filter_to_threads {
-            " [Threads]"
-        } else {
-            ""
+        let filter_indicator = match self.app.thread_filter {
+            crate::app::ThreadFilter::All => "",
+            crate::app::ThreadFilter::OnlyThreads => " [Threads]",
+            crate::app::ThreadFilter::NoThreads => " [No Threads]",
         };
         let filtered_groups = self.app.filtered_groups();
         let total_emails: usize = filtered_groups.iter().map(|g| g.count()).sum();
@@ -599,9 +599,17 @@ impl Widget for GroupListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Show message if filter is active but no groups have threads
-        if filtered_groups.is_empty() && self.app.filter_to_threads {
-            let msg = "No senders with threads (t: show messages from all senders)";
+        // Show message if filter is active but no groups match
+        if filtered_groups.is_empty() && self.app.thread_filter != crate::app::ThreadFilter::All {
+            let msg = match self.app.thread_filter {
+                crate::app::ThreadFilter::OnlyThreads => {
+                    "No senders with threads (t: cycle filter)"
+                }
+                crate::app::ThreadFilter::NoThreads => {
+                    "No senders without threads (t: cycle filter)"
+                }
+                crate::app::ThreadFilter::All => unreachable!(),
+            };
             let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
             let y = inner.y + inner.height / 2;
             buf.set_line(
@@ -631,16 +639,19 @@ impl Widget for GroupListWidget<'_> {
                 Style::default()
             };
 
-            let thread_indicator = if self.app.group_has_multi_message_threads(group) {
+            // Don't show thread indicator in NoThreads mode (we're only showing single messages)
+            let thread_indicator = if self.app.thread_filter != crate::app::ThreadFilter::NoThreads
+                && self.app.group_has_multi_message_threads(group)
+            {
                 "◈ "
             } else {
                 "  "
             };
 
-            let thread_count = group.thread_count();
-            let email_count = group.count();
+            let thread_count = self.app.filtered_thread_count_for_group(group);
+            let email_count = self.app.filtered_email_count_for_group(group);
             let line = if thread_count == email_count {
-                // Each email is its own thread
+                // Each email is its own thread (or in NoThreads mode)
                 format!("{}{} ({} emails)", thread_indicator, group.key, email_count)
             } else {
                 format!(
@@ -675,16 +686,16 @@ impl StatefulWidget for EmailListWidget<'_> {
     type State = TableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let filter_indicator = if self.app.filter_to_threads {
-            " [Threads]"
-        } else {
-            ""
+        let filter_indicator = match self.app.thread_filter {
+            crate::app::ThreadFilter::All => "",
+            crate::app::ThreadFilter::OnlyThreads => " [Threads]",
+            crate::app::ThreadFilter::NoThreads => " [No Threads]",
         };
 
         // Get the title - use current group if available, otherwise use viewing_group_key
         let title = if let Some(g) = self.app.current_group() {
-            let email_count = self.app.total_thread_emails_for_group(g);
-            let thread_count = g.thread_count();
+            let thread_count = self.app.filtered_thread_count_for_group(g);
+            let email_count = self.app.filtered_email_count_for_group(g);
             if thread_count == email_count {
                 format!(
                     " Threads from {}{} — {} threads ",
@@ -725,8 +736,16 @@ impl StatefulWidget for EmailListWidget<'_> {
         }
 
         // Show message if filter is active but no threads match
-        if filtered_threads.is_empty() && self.app.filter_to_threads {
-            let msg = "No threads in this group (t: show all emails from this sender, q: show messages from all senders)";
+        if filtered_threads.is_empty() && self.app.thread_filter != crate::app::ThreadFilter::All {
+            let msg = match self.app.thread_filter {
+                crate::app::ThreadFilter::OnlyThreads => {
+                    "No threads in this group (t: cycle filter)"
+                }
+                crate::app::ThreadFilter::NoThreads => {
+                    "No single messages in this group (t: cycle filter)"
+                }
+                crate::app::ThreadFilter::All => unreachable!(),
+            };
             let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
             let y = inner.y + inner.height / 2;
             buf.set_line(
