@@ -1343,13 +1343,27 @@ impl App {
         }
     }
 
-    /// Removes all selected emails from the app
+    /// Removes all visible selected emails from the app.
+    /// Respects the current filter - only removes emails that are both selected AND visible.
     pub fn remove_selected_emails(&mut self) {
-        let ids_to_remove = self.selected_emails.clone();
+        // Get IDs of visible selected emails
+        let ids_to_remove: Vec<String> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .filter(|e| self.selected_emails.contains(&e.id))
+            .map(|e| e.id.clone())
+            .collect();
+
+        // Remove from emails list
         for id in &ids_to_remove {
             self.emails.retain(|e| &e.id != id);
         }
-        self.clear_selection();
+
+        // Clear only the removed selections (keep invisible selections)
+        for id in &ids_to_remove {
+            self.selected_emails.remove(id);
+        }
+
         self.regroup();
 
         // Adjust selected_email for the (possibly changed) current group
