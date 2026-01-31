@@ -631,11 +631,11 @@ impl App {
 
     /// Gets the currently selected email, if any.
     /// In email list view, this returns the newest email of the selected thread.
+    /// Respects the filter_to_threads setting to match what's displayed in the UI.
     pub fn current_email(&self) -> Option<&Email> {
-        self.current_group().and_then(|g| {
-            self.selected_email
-                .and_then(|idx| g.threads().get(idx).copied())
-        })
+        let filtered = self.filtered_threads_in_current_group();
+        self.selected_email
+            .and_then(|idx| filtered.get(idx).copied())
     }
 
     /// Gets all emails in the thread of the currently selected email
@@ -1885,6 +1885,68 @@ mod tests {
         app.toggle_thread_filter();
         assert!(!app.filter_to_threads);
         assert_eq!(app.filtered_threads_in_current_group().len(), 2);
+    }
+
+    #[test]
+    fn test_current_email_respects_thread_filter() {
+        // Regression test: current_email() must return the email at the selected
+        // index in the FILTERED list, not the unfiltered list. Otherwise, pressing
+        // Enter on what looks like a multi-message thread opens the browser instead
+        // of expanding the thread view.
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Single-message thread (will be filtered out)
+            create_test_email_with_thread("1", "thread_single_1", "alice@example.com"),
+            // Multi-message thread
+            create_test_email_with_thread("2", "thread_multi_1", "alice@example.com"),
+            create_test_email_with_thread("3", "thread_multi_1", "alice@example.com"),
+            // Another single-message thread (will be filtered out)
+            create_test_email_with_thread("4", "thread_single_2", "alice@example.com"),
+            // Another multi-message thread
+            create_test_email_with_thread("5", "thread_multi_2", "alice@example.com"),
+            create_test_email_with_thread("6", "thread_multi_2", "alice@example.com"),
+        ]);
+
+        app.enter(); // Enter email list for alice's group
+
+        // Verify unfiltered state: 4 threads total
+        assert_eq!(app.filtered_threads_in_current_group().len(), 4);
+
+        // Enable thread filter
+        app.toggle_thread_filter();
+        assert!(app.filter_to_threads);
+
+        // With filter, should only see 2 threads (the multi-message ones)
+        assert_eq!(app.filtered_threads_in_current_group().len(), 2);
+
+        // Collect thread_ids from the filtered list for comparison
+        let filtered_thread_ids: Vec<String> = app
+            .filtered_threads_in_current_group()
+            .iter()
+            .map(|e| e.thread_id.clone())
+            .collect();
+
+        // Verify that every position in the filtered list returns a multi-message thread
+        // This is the key invariant: what you see (filtered) is what you get (current_email)
+        for (idx, expected_thread_id) in filtered_thread_ids.iter().enumerate() {
+            app.selected_email = Some(idx);
+            let current = app.current_email().expect("should have current email");
+
+            // The current email must be from a multi-message thread
+            assert!(
+                app.thread_has_multiple_messages(&current.thread_id),
+                "index {} should return a multi-message thread, got {}",
+                idx,
+                current.thread_id
+            );
+
+            // And it must match what's displayed at that position
+            assert_eq!(
+                &current.thread_id, expected_thread_id,
+                "current_email() at index {} should match filtered list",
+                idx
+            );
+        }
     }
 
     #[test]
