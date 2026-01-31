@@ -56,7 +56,6 @@ pub enum UndoActionType {
 /// Context about what was affected by the action
 #[derive(Debug, Clone, PartialEq)]
 pub enum UndoContext {
-    SingleEmail { subject: String },
     Group { sender: String },
     Thread { subject: String },
 }
@@ -886,26 +885,6 @@ impl App {
         }
     }
 
-    /// Returns the count of filtered emails in the current group
-    pub fn filtered_email_count(&self) -> usize {
-        self.filtered_emails_in_current_group().len()
-    }
-
-    /// Returns clones of the filtered emails in the current group (for demo mode)
-    pub fn filtered_emails_cloned(&self) -> Vec<Email> {
-        self.filtered_emails_in_current_group()
-            .into_iter()
-            .cloned()
-            .collect()
-    }
-
-    /// Checks if the filtered emails in the current group contain any multi-message threads
-    pub fn filtered_has_multi_message_threads(&self) -> bool {
-        self.filtered_emails_in_current_group()
-            .iter()
-            .any(|e| self.multi_message_threads.contains(&e.thread_id))
-    }
-
     /// Returns the filtered thread count for a specific group
     pub fn filtered_thread_count_for_group(&self, group: &EmailGroup) -> usize {
         match self.thread_filter {
@@ -1000,17 +979,21 @@ impl App {
         self.selected_thread_email = None;
     }
 
-    /// Removes all emails in the current group that match the current filter
-    pub fn remove_current_group_emails(&mut self) {
-        let ids_to_remove: Vec<String> = self
+    /// Removes all emails in threads that contain emails from the current group.
+    /// This affects ALL emails in those threads, including from other senders.
+    pub fn remove_current_group_threads(&mut self) {
+        // Get thread IDs from the filtered group emails
+        let thread_ids: HashSet<String> = self
             .filtered_emails_in_current_group()
             .iter()
-            .map(|e| e.id.clone())
+            .map(|e| e.thread_id.clone())
             .collect();
-        self.emails.retain(|e| !ids_to_remove.contains(&e.id));
-        self.regroup();
 
-        // If we removed the last group, adjust selection
+        self.emails.retain(|e| !thread_ids.contains(&e.thread_id));
+        self.regroup();
+        self.selected_email = None;
+        self.selected_thread_email = None;
+
         if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
             self.selected_group = self.groups.len() - 1;
         }
@@ -1029,19 +1012,128 @@ impl App {
         self.regroup();
     }
 
-    /// Gets all email IDs and source folders in the current group (respects filter)
-    pub fn current_group_email_ids(&self) -> Vec<(String, String)> {
-        self.filtered_emails_in_current_group()
-            .iter()
-            .map(|e| (e.id.clone(), e.source_folder.clone()))
-            .collect()
-    }
-
     /// Gets all email IDs and source folders in the current thread
     pub fn current_thread_email_ids(&self) -> Vec<(String, String)> {
         self.current_thread_emails()
             .iter()
             .map(|e| (e.id.clone(), e.source_folder.clone()))
+            .collect()
+    }
+
+    /// Gets all email IDs and source folders from threads that contain emails in the current group.
+    /// This expands the operation to include ALL emails in affected threads, including from other senders.
+    /// Respects the current thread filter.
+    pub fn current_group_thread_email_ids(&self) -> Vec<(String, String)> {
+        // Get thread IDs from the filtered group emails
+        let thread_ids: HashSet<String> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .map(|e| e.thread_id.clone())
+            .collect();
+
+        // Return all emails from those threads (including from other senders)
+        self.emails
+            .iter()
+            .filter(|e| thread_ids.contains(&e.thread_id))
+            .map(|e| (e.id.clone(), e.source_folder.clone()))
+            .collect()
+    }
+
+    /// Gets all emails from threads that contain emails in the current group.
+    /// This expands the operation to include ALL emails in affected threads, including from other senders.
+    /// Respects the current thread filter.
+    pub fn current_group_thread_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
+        // Get thread IDs from the filtered group emails
+        let thread_ids: HashSet<String> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .map(|e| e.thread_id.clone())
+            .collect();
+
+        // Return all emails from those threads (including from other senders)
+        self.emails
+            .iter()
+            .filter(|e| thread_ids.contains(&e.thread_id))
+            .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
+            .collect()
+    }
+
+    /// Gets all email IDs and source folders from threads that contain the selected emails.
+    /// This expands the operation to include ALL emails in affected threads, including from other senders.
+    /// Respects the current filter - only considers selected emails that are visible.
+    pub fn selected_thread_email_ids(&self) -> Vec<(String, String)> {
+        // Get thread IDs from the selected emails
+        let thread_ids: HashSet<String> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .filter(|e| self.selected_emails.contains(&e.id))
+            .map(|e| e.thread_id.clone())
+            .collect();
+
+        // Return all emails from those threads (including from other senders)
+        self.emails
+            .iter()
+            .filter(|e| thread_ids.contains(&e.thread_id))
+            .map(|e| (e.id.clone(), e.source_folder.clone()))
+            .collect()
+    }
+
+    /// Gets all emails from threads that contain the selected emails.
+    /// This expands the operation to include ALL emails in affected threads, including from other senders.
+    /// Respects the current filter - only considers selected emails that are visible.
+    pub fn selected_thread_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
+        // Get thread IDs from the selected emails
+        let thread_ids: HashSet<String> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .filter(|e| self.selected_emails.contains(&e.id))
+            .map(|e| e.thread_id.clone())
+            .collect();
+
+        // Return all emails from those threads (including from other senders)
+        self.emails
+            .iter()
+            .filter(|e| thread_ids.contains(&e.thread_id))
+            .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
+            .collect()
+    }
+
+    /// Gets clones of all emails from threads that contain emails in the current group.
+    /// This expands the operation to include ALL emails in affected threads, including from other senders.
+    /// For use in demo mode.
+    pub fn current_group_thread_emails_cloned(&self) -> Vec<Email> {
+        // Get thread IDs from the filtered group emails
+        let thread_ids: HashSet<String> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .map(|e| e.thread_id.clone())
+            .collect();
+
+        // Return all emails from those threads (including from other senders)
+        self.emails
+            .iter()
+            .filter(|e| thread_ids.contains(&e.thread_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Gets clones of all emails from threads that contain the selected emails.
+    /// This expands the operation to include ALL emails in affected threads, including from other senders.
+    /// For use in demo mode.
+    pub fn selected_thread_emails_cloned(&self) -> Vec<Email> {
+        // Get thread IDs from the selected emails
+        let thread_ids: HashSet<String> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .filter(|e| self.selected_emails.contains(&e.id))
+            .map(|e| e.thread_id.clone())
+            .collect();
+
+        // Return all emails from those threads (including from other senders)
+        self.emails
+            .iter()
+            .filter(|e| thread_ids.contains(&e.thread_id))
+            .cloned()
             .collect()
     }
 
@@ -1091,50 +1183,11 @@ impl App {
         !self.selected_emails.is_empty()
     }
 
-    /// Returns the selected emails as (id, source_folder) pairs.
-    /// Respects the current filter - only returns selected emails that are visible.
-    pub fn selected_email_ids(&self) -> Vec<(String, String)> {
-        self.filtered_emails_in_current_group()
-            .iter()
-            .filter(|e| self.selected_emails.contains(&e.id))
-            .map(|e| (e.id.clone(), e.source_folder.clone()))
-            .collect()
-    }
-
-    /// Returns the selected emails' data for undo support: (uid, message_id, source_folder)
-    /// Respects the current filter - only returns selected emails that are visible.
-    pub fn selected_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
-        self.filtered_emails_in_current_group()
-            .iter()
-            .filter(|e| self.selected_emails.contains(&e.id))
-            .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
-            .collect()
-    }
-
-    /// Returns the current group's emails' data for undo support: (uid, message_id, source_folder)
-    /// Respects the current filter setting.
-    pub fn current_group_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
-        self.filtered_emails_in_current_group()
-            .iter()
-            .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
-            .collect()
-    }
-
     /// Returns the current thread's emails' data for undo support: (uid, message_id, source_folder)
     pub fn current_thread_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
         self.current_thread_emails()
             .iter()
             .map(|e| (e.id.clone(), e.message_id.clone(), e.source_folder.clone()))
-            .collect()
-    }
-
-    /// Returns clones of the selected Email objects.
-    /// Respects the current filter - only returns selected emails that are visible.
-    pub fn selected_emails_cloned(&self) -> Vec<Email> {
-        self.filtered_emails_in_current_group()
-            .into_iter()
-            .filter(|e| self.selected_emails.contains(&e.id))
-            .cloned()
             .collect()
     }
 
@@ -1427,65 +1480,28 @@ impl App {
     /// Check if an undo entry matches the query
     fn undo_entry_matches(&self, entry: &UndoEntry, query: &str) -> bool {
         match &entry.context {
-            UndoContext::SingleEmail { subject } => subject.to_lowercase().contains(query),
             UndoContext::Group { sender } => sender.to_lowercase().contains(query),
             UndoContext::Thread { subject } => subject.to_lowercase().contains(query),
         }
     }
 
-    /// Removes all visible selected emails from the app.
-    /// Respects the current filter - only removes emails that are both selected AND visible.
-    pub fn remove_selected_emails(&mut self) {
-        // Get IDs of visible selected emails
-        let ids_to_remove: Vec<String> = self
+    /// Removes all emails in threads that contain selected emails.
+    /// This affects ALL emails in those threads, including from other senders.
+    pub fn remove_selected_threads(&mut self) {
+        // Get thread IDs from the selected emails
+        let thread_ids: HashSet<String> = self
             .filtered_emails_in_current_group()
             .iter()
             .filter(|e| self.selected_emails.contains(&e.id))
-            .map(|e| e.id.clone())
+            .map(|e| e.thread_id.clone())
             .collect();
 
-        // Remove from emails list
-        for id in &ids_to_remove {
-            self.emails.retain(|e| &e.id != id);
-        }
-
-        // Clear only the removed selections (keep invisible selections)
-        for id in &ids_to_remove {
-            self.selected_emails.remove(id);
-        }
-
-        self.regroup();
-
-        // Adjust selected_email for the (possibly changed) current group
-        if let Some(group) = self.groups.get(self.selected_group) {
-            let threads = group.threads();
-            if threads.is_empty() {
-                self.selected_email = None;
-            } else if self.selected_email.is_none()
-                || self.selected_email.is_some_and(|idx| idx >= threads.len())
-            {
-                self.selected_email = Some(threads.len().saturating_sub(1));
-            }
-        } else {
-            self.selected_email = None;
-        }
-    }
-}
-
-#[cfg(test)]
-impl App {
-    /// Gets the thread IDs for emails in the current group
-    fn current_group_thread_ids(&self) -> HashSet<String> {
-        self.current_group()
-            .map(|g| g.emails.iter().map(|e| e.thread_id.clone()).collect())
-            .unwrap_or_default()
-    }
-
-    /// Removes all emails in threads that contain emails from the current group
-    /// This affects ALL emails in those threads, including from other senders
-    pub fn remove_current_group_threads(&mut self) {
-        let thread_ids = self.current_group_thread_ids();
+        // Remove all emails from those threads
         self.emails.retain(|e| !thread_ids.contains(&e.thread_id));
+
+        // Clear selection since the emails are gone
+        self.selected_emails.clear();
+
         self.regroup();
         self.selected_email = None;
         self.selected_thread_email = None;
@@ -1493,6 +1509,13 @@ impl App {
         if self.selected_group >= self.groups.len() && !self.groups.is_empty() {
             self.selected_group = self.groups.len() - 1;
         }
+
+        // Update selected_email based on the (possibly new) current group
+        self.selected_email = self
+            .groups
+            .get(self.selected_group)
+            .filter(|g| !g.threads().is_empty())
+            .map(|_| 0);
     }
 }
 
@@ -1866,29 +1889,6 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_current_group_emails() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
-            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
-            create_test_email_with_thread("3", "thread_b", "alice@example.com"),
-        ]);
-
-        let alice_idx = app
-            .groups
-            .iter()
-            .position(|g| g.key == "alice@example.com")
-            .unwrap();
-        app.selected_group = alice_idx;
-
-        app.remove_current_group_emails();
-
-        // Only bob's email should remain
-        assert_eq!(app.emails.len(), 1);
-        assert_eq!(app.emails[0].from_email, "bob@example.com");
-    }
-
-    #[test]
     fn test_remove_current_group_threads() {
         let mut app = App::new();
         app.set_emails(vec![
@@ -1912,8 +1912,8 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_group_emails_selects_first_in_new_group() {
-        // Regression test: when deleting all emails from a group causes a switch
+    fn test_remove_group_threads_selects_first_in_new_group() {
+        // Regression test: when deleting all threads from a group causes a switch
         // to a different group, selected_email should be Some(0), not None
         let mut app = App::new();
         app.set_emails(vec![
@@ -1932,8 +1932,8 @@ mod tests {
         assert_eq!(app.view, View::EmailList);
         assert_eq!(app.selected_email, Some(0));
 
-        // Delete all of alice's emails
-        app.remove_current_group_emails();
+        // Delete all threads touched by alice's group
+        app.remove_current_group_threads();
 
         // Now bob's group should be selected, with first email selected
         assert_eq!(app.groups.len(), 1);
@@ -2193,7 +2193,7 @@ mod tests {
         // Push an entry
         let entry1 = UndoEntry {
             action_type: UndoActionType::Archive,
-            context: UndoContext::SingleEmail {
+            context: UndoContext::Thread {
                 subject: "Test Email".to_string(),
             },
             emails: vec![(
@@ -2251,7 +2251,7 @@ mod tests {
         for i in 0..60 {
             let entry = UndoEntry {
                 action_type: UndoActionType::Archive,
-                context: UndoContext::SingleEmail {
+                context: UndoContext::Thread {
                     subject: format!("Email {}", i),
                 },
                 emails: vec![(
@@ -2269,10 +2269,10 @@ mod tests {
 
         // The newest entry (59) should be at index 0
         let current = app.current_undo_entry().unwrap();
-        if let UndoContext::SingleEmail { subject } = &current.context {
+        if let UndoContext::Thread { subject } = &current.context {
             assert_eq!(subject, "Email 59");
         } else {
-            panic!("Expected SingleEmail context");
+            panic!("Expected Thread context");
         }
     }
 
@@ -2284,7 +2284,7 @@ mod tests {
         for i in 0..5 {
             let entry = UndoEntry {
                 action_type: UndoActionType::Archive,
-                context: UndoContext::SingleEmail {
+                context: UndoContext::Thread {
                     subject: format!("Email {}", i),
                 },
                 emails: vec![(
@@ -2341,11 +2341,6 @@ mod tests {
     #[test]
     fn test_undo_context_variants() {
         // Test all context variants
-        let single = UndoContext::SingleEmail {
-            subject: "Test".to_string(),
-        };
-        assert!(matches!(single, UndoContext::SingleEmail { .. }));
-
         let group = UndoContext::Group {
             sender: "test@example.com".to_string(),
         };
@@ -2760,5 +2755,141 @@ mod tests {
         // Restore should go back to bob
         app.restore_selection(original_group, None, None, 0);
         assert_eq!(app.current_group().unwrap().key, "bob@example.com");
+    }
+
+    #[test]
+    fn test_current_group_thread_email_ids_includes_other_senders() {
+        // When operating on a group, we should get ALL emails from affected threads,
+        // including emails from other senders
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Thread shared between alice and bob
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+            // Alice's solo thread
+            create_test_email_with_thread("3", "thread_b", "alice@example.com"),
+            // Charlie's unrelated thread
+            create_test_email_with_thread("4", "thread_c", "charlie@example.com"),
+        ]);
+
+        // Select alice's group
+        let alice_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "alice@example.com")
+            .unwrap();
+        app.selected_group = alice_idx;
+
+        // Get thread email IDs - should include bob's email from thread_a
+        let thread_email_ids = app.current_group_thread_email_ids();
+        let ids: Vec<&str> = thread_email_ids.iter().map(|(id, _)| id.as_str()).collect();
+
+        // Should include alice's emails (1, 3)
+        assert!(
+            ids.contains(&"1"),
+            "Should contain alice's email from thread_a"
+        );
+        assert!(
+            ids.contains(&"3"),
+            "Should contain alice's email from thread_b"
+        );
+        // Should include bob's email from the shared thread
+        assert!(
+            ids.contains(&"2"),
+            "Should contain bob's email from thread_a (same thread as alice)"
+        );
+        // Should NOT include charlie's unrelated email
+        assert!(
+            !ids.contains(&"4"),
+            "Should not contain charlie's unrelated email"
+        );
+
+        // Total should be 3 emails
+        assert_eq!(thread_email_ids.len(), 3);
+    }
+
+    #[test]
+    fn test_current_group_thread_email_ids_respects_filter() {
+        // When a thread filter is active, only threads visible in that filter should be included
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Multi-message thread
+            create_test_email_with_thread("1", "thread_multi", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_multi", "alice@example.com"),
+            create_test_email_with_thread("3", "thread_multi", "bob@example.com"),
+            // Single-message thread
+            create_test_email_with_thread("4", "thread_single", "alice@example.com"),
+        ]);
+
+        // Enter alice's group
+        app.enter();
+
+        // Filter to only multi-message threads
+        app.toggle_thread_filter();
+        assert_eq!(app.thread_filter, ThreadFilter::OnlyThreads);
+
+        let thread_email_ids = app.current_group_thread_email_ids();
+        let ids: Vec<&str> = thread_email_ids.iter().map(|(id, _)| id.as_str()).collect();
+
+        // Should include all emails from thread_multi (including bob's)
+        assert!(ids.contains(&"1"));
+        assert!(ids.contains(&"2"));
+        assert!(
+            ids.contains(&"3"),
+            "Should include bob's email from the filtered thread"
+        );
+        // Should NOT include the single-message thread (filtered out)
+        assert!(
+            !ids.contains(&"4"),
+            "Should not include email from filtered-out single thread"
+        );
+    }
+
+    #[test]
+    fn test_current_group_thread_email_ids_for_undo_includes_other_senders() {
+        // The undo data should also include all emails from affected threads
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+        ]);
+
+        let alice_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "alice@example.com")
+            .unwrap();
+        app.selected_group = alice_idx;
+
+        let undo_data = app.current_group_thread_emails_for_undo();
+
+        // Should have both alice and bob's emails for undo
+        assert_eq!(undo_data.len(), 2);
+    }
+
+    #[test]
+    fn test_selected_thread_email_ids_includes_other_senders() {
+        // When operating on selected emails, we should get ALL emails from affected threads
+        let mut app = App::new();
+        app.set_emails(vec![
+            // Single-message threads that can be selected
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "bob@example.com"),
+        ]);
+
+        app.enter(); // Enter alice's group
+
+        // Select alice's email (thread_a email 1)
+        app.selected_emails.insert("1".to_string());
+
+        let thread_email_ids = app.selected_thread_email_ids();
+        let ids: Vec<&str> = thread_email_ids.iter().map(|(id, _)| id.as_str()).collect();
+
+        // Should include both emails from the thread
+        assert!(ids.contains(&"1"), "Should contain selected email");
+        assert!(
+            ids.contains(&"2"),
+            "Should contain bob's email from same thread"
+        );
     }
 }
