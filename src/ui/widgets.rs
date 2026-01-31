@@ -586,7 +586,10 @@ impl Widget for GroupListWidget<'_> {
             crate::app::ThreadFilter::NoThreads => " [No Threads]",
         };
         let filtered_groups = self.app.filtered_groups();
-        let total_emails: usize = filtered_groups.iter().map(|g| g.count()).sum();
+        let total_emails: usize = filtered_groups
+            .iter()
+            .map(|g| self.app.filtered_email_count_for_group(g))
+            .sum();
         let title = format!(
             " Senders (by {}){} — {} emails in {} groups ",
             mode_str,
