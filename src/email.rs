@@ -21,6 +21,8 @@ pub struct Email {
     pub references: Vec<String>,
     /// The IMAP folder this email came from ("INBOX" or "[Gmail]/Sent Mail")
     pub source_folder: String,
+    /// The email body content (lazy-loaded when viewed)
+    pub body: Option<String>,
 }
 
 /// Builder for creating Email instances
@@ -108,6 +110,7 @@ impl EmailBuilder {
             } else {
                 self.source_folder
             },
+            body: None,
         }
     }
 }
@@ -259,6 +262,7 @@ impl Email {
             in_reply_to: None,
             references: Vec::new(),
             source_folder: "INBOX".to_string(),
+            body: None,
         }
     }
 }

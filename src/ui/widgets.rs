@@ -111,6 +111,7 @@ pub struct ViewportHeights {
     pub email_list: usize,
     pub thread_view: usize,
     pub undo_history: usize,
+    pub text_view: usize,
 }
 
 impl ViewportHeights {
@@ -121,6 +122,7 @@ impl ViewportHeights {
             View::EmailList => self.email_list,
             View::Thread => self.thread_view,
             View::UndoHistory => self.undo_history,
+            View::EmailBody => self.text_view,
         }
     }
 }
@@ -150,6 +152,8 @@ pub struct UiState {
     pub search_query: String,
     /// Original selection before search started (for restore on no match)
     pub search_original_selection: Option<SearchSelection>,
+    /// State of the text view (loading, loaded, error)
+    pub text_view_state: TextViewState,
 }
 
 /// Stores the selection state before search started
@@ -876,6 +880,105 @@ impl StatefulWidget for ThreadViewWidget<'_> {
     }
 }
 
+/// State of text view content (for async loading)
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum TextViewState {
+    /// Body not yet loaded, need to fetch
+    #[default]
+    Loading,
+    /// Body successfully loaded
+    Loaded(String),
+    /// Error loading body
+    Error(String),
+}
+
+/// Widget for displaying email body text
+pub struct TextViewWidget<'a> {
+    app: &'a App,
+    scroll_offset: usize,
+    state: &'a TextViewState,
+}
+
+impl<'a> TextViewWidget<'a> {
+    pub fn new(app: &'a App, scroll_offset: usize, state: &'a TextViewState) -> Self {
+        Self {
+            app,
+            scroll_offset,
+            state,
+        }
+    }
+}
+
+impl Widget for TextViewWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let email = self.app.viewing_email();
+
+        // Build title
+        let title = email
+            .map(|e| format!(" {} ", e.subject))
+            .unwrap_or_else(|| " Email ".to_string());
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Cyan));
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        // Build header lines
+        let mut header_lines: Vec<Line> = Vec::new();
+        if let Some(email) = email {
+            header_lines.push(Line::from(vec![
+                Span::styled("From: ", Style::default().fg(Color::Yellow)),
+                Span::raw(&email.from),
+            ]));
+            header_lines.push(Line::from(vec![
+                Span::styled("Subject: ", Style::default().fg(Color::Yellow)),
+                Span::raw(&email.subject),
+            ]));
+            header_lines.push(Line::from(vec![
+                Span::styled("Date: ", Style::default().fg(Color::Yellow)),
+                Span::raw(format_date(&email.date)),
+            ]));
+            header_lines.push(Line::from(""));
+        }
+
+        // Build body content
+        let body_lines: Vec<Line> = match self.state {
+            TextViewState::Loading => {
+                vec![Line::from(Span::styled(
+                    "Loading...",
+                    Style::default().fg(Color::DarkGray),
+                ))]
+            }
+            TextViewState::Error(err) => {
+                vec![Line::from(Span::styled(
+                    format!("Error: {}", err),
+                    Style::default().fg(Color::Red),
+                ))]
+            }
+            TextViewState::Loaded(body) => {
+                body.lines().map(|l| Line::from(l.to_string())).collect()
+            }
+        };
+
+        // Combine header and body
+        let mut all_lines: Vec<Line> = header_lines;
+        all_lines.extend(body_lines);
+
+        // Apply scroll offset
+        let visible_lines: Vec<Line> = all_lines
+            .into_iter()
+            .skip(self.scroll_offset)
+            .take(inner.height as usize)
+            .collect();
+
+        let paragraph = Paragraph::new(visible_lines);
+        paragraph.render(inner, buf);
+    }
+}
+
 /// Widget for rendering the undo history list
 pub struct UndoHistoryWidget<'a> {
     app: &'a App,
@@ -1054,9 +1157,10 @@ impl Widget for HelpBarWidget<'_> {
                 }
             }
             View::Thread => {
-                "j/k: navigate  /: search  Enter: browser  A/D: archive/delete  q: back  ?: more"
+                "j/k: navigate  Enter: view body  e: browser  A/D: archive/delete  q: back  ?: more"
             }
             View::UndoHistory => "j/k: navigate  /: search  Enter: undo  q: back  ?: more",
+            View::EmailBody => "j/k: scroll  e: browser  Esc: back  q: quit  ?: more",
         };
 
         let paragraph = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
@@ -1127,7 +1231,8 @@ impl HelpMenuWidget {
                 (
                     "Actions",
                     vec![
-                        ("Enter", "Open in browser"),
+                        ("Enter", "View email body"),
+                        ("e", "Open in browser"),
                         ("A", "Archive thread"),
                         ("D", "Delete thread"),
                         ("u", "Undo history"),
@@ -1139,6 +1244,24 @@ impl HelpMenuWidget {
                 nav,
                 ("Actions", vec![("Enter", "Undo selected action")]),
                 ("General", vec![("q", "Back"), ("?", "Toggle this help")]),
+            ],
+            View::EmailBody => vec![
+                (
+                    "Navigation",
+                    vec![
+                        ("j / ↓", "Scroll down"),
+                        ("k / ↑", "Scroll up"),
+                        ("g g", "Go to top"),
+                        ("G", "Go to bottom"),
+                        ("Ctrl+d", "Half page down"),
+                        ("Ctrl+u", "Half page up"),
+                    ],
+                ),
+                ("Actions", vec![("e", "Open in browser")]),
+                (
+                    "General",
+                    vec![("Esc", "Back"), ("q", "Quit"), ("?", "Toggle this help")],
+                ),
             ],
         }
     }

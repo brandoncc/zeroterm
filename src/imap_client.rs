@@ -38,6 +38,10 @@ pub trait EmailClient {
         emails: &[(Option<String>, Option<u32>, String, String)],
         progress_tx: Option<std::sync::mpsc::Sender<usize>>,
     ) -> Result<()>;
+
+    /// Fetches the body of an email by UID from the specified folder
+    /// Returns the plain text body (or HTML converted to text if no plain text part)
+    fn fetch_email_body(&mut self, uid: &str, folder: &str) -> Result<String>;
 }
 
 /// IMAP client for Gmail access
@@ -552,6 +556,119 @@ impl EmailClient for ImapClient {
 
         Ok(())
     }
+
+    fn fetch_email_body(&mut self, uid: &str, folder: &str) -> Result<String> {
+        crate::debug_log!("fetch_email_body: fetching UID {} from {}", uid, folder);
+
+        self.session
+            .select(folder)
+            .context(format!("Failed to select {}", folder))?;
+
+        // Fetch the full message body (BODY.PEEK[] to avoid marking as read)
+        let messages = self
+            .session
+            .uid_fetch(uid, "BODY.PEEK[]")
+            .context("Failed to fetch email body")?;
+
+        let message = messages.iter().next().context("Email not found")?;
+
+        let body_bytes = message.body().context("Email has no body")?;
+
+        // Parse the email using mailparse
+        let parsed = mailparse::parse_mail(body_bytes).context("Failed to parse email")?;
+
+        // Extract text content, preferring plain text over HTML
+        let body_text = extract_body_text(&parsed)?;
+
+        // Sanitize for terminal display
+        Ok(sanitize_for_terminal(&body_text))
+    }
+}
+
+/// Extracts the text body from a parsed email, preferring text/plain over text/html
+fn extract_body_text(mail: &mailparse::ParsedMail) -> Result<String> {
+    // If it's a multipart message, search for the best text part
+    if !mail.subparts.is_empty() {
+        // First try to find text/plain
+        if let Some(text) = find_part_by_type(mail, "text/plain") {
+            return Ok(text);
+        }
+        // Fall back to text/html (converted to text)
+        if let Some(html) = find_part_by_type(mail, "text/html") {
+            return Ok(html_to_text(&html));
+        }
+        // If no text parts found, return a message
+        return Ok("[No text content found]".to_string());
+    }
+
+    // Single part message
+    let content_type = mail.ctype.mimetype.to_lowercase();
+    let body = mail.get_body().context("Failed to get email body")?;
+
+    if content_type.starts_with("text/plain") {
+        Ok(body)
+    } else if content_type.starts_with("text/html") {
+        Ok(html_to_text(&body))
+    } else {
+        Ok(format!("[Content type: {}]", content_type))
+    }
+}
+
+/// Recursively searches for a part with the given MIME type
+fn find_part_by_type(mail: &mailparse::ParsedMail, mime_type: &str) -> Option<String> {
+    let content_type = mail.ctype.mimetype.to_lowercase();
+
+    if content_type.starts_with(mime_type) {
+        return mail.get_body().ok();
+    }
+
+    for part in &mail.subparts {
+        if let Some(text) = find_part_by_type(part, mime_type) {
+            return Some(text);
+        }
+    }
+
+    None
+}
+
+/// Converts HTML to plain text using html2text
+fn html_to_text(html: &str) -> String {
+    html2text::from_read(html.as_bytes(), 80)
+}
+
+/// Sanitizes text for safe terminal display
+/// - Strips ANSI escape sequences
+/// - Removes control characters except newline and tab
+/// - Preserves Unicode
+fn sanitize_for_terminal(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip ANSI escape sequence
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // Skip until we hit a letter (the command character)
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else if c == '\n' || c == '\t' {
+            // Preserve newlines and tabs
+            result.push(c);
+        } else if c.is_control() {
+            // Skip other control characters
+        } else {
+            // Keep all other characters (including Unicode)
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 /// Decodes a potentially MIME-encoded header value
@@ -883,5 +1000,53 @@ mod tests {
     fn test_format_uid_sequence_scattered() {
         let ranges = vec![(1, 1), (3, 3), (5, 5)];
         assert_eq!(format_uid_sequence(&ranges), "1,3,5");
+    }
+
+    #[test]
+    fn test_sanitize_strips_ansi_escape() {
+        let text = "Hello \x1b[31mred\x1b[0m world";
+        assert_eq!(sanitize_for_terminal(text), "Hello red world");
+    }
+
+    #[test]
+    fn test_sanitize_removes_control_chars() {
+        let text = "Hello\x07\x08world";
+        assert_eq!(sanitize_for_terminal(text), "Helloworld");
+    }
+
+    #[test]
+    fn test_sanitize_preserves_newlines_and_tabs() {
+        let text = "Line 1\nLine 2\tTabbed";
+        assert_eq!(sanitize_for_terminal(text), "Line 1\nLine 2\tTabbed");
+    }
+
+    #[test]
+    fn test_sanitize_preserves_unicode() {
+        let text = "Hello 日本語 émojis 🎉";
+        assert_eq!(sanitize_for_terminal(text), "Hello 日本語 émojis 🎉");
+    }
+
+    #[test]
+    fn test_html_to_text_basic() {
+        let html = "<p>Hello <b>world</b></p>";
+        let text = html_to_text(html);
+        assert!(text.contains("Hello"));
+        assert!(text.contains("world"));
+    }
+
+    #[test]
+    fn test_mock_client_fetch_body() {
+        let mut mock = MockEmailClient::new();
+
+        mock.expect_fetch_email_body()
+            .with(
+                mockall::predicate::eq("123"),
+                mockall::predicate::eq("INBOX"),
+            )
+            .returning(|_, _| Ok("Email body content".to_string()));
+
+        let result = mock.fetch_email_body("123", "INBOX");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Email body content");
     }
 }
