@@ -8,7 +8,7 @@ use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
     GroupListWidget, HelpBarWidget, HelpMenuWidget, InboxZeroWidget, SearchBarWidget,
-    StatusModalWidget, ThreadViewWidget, UiState, UndoHistoryWidget,
+    StatusModalWidget, TextViewWidget, ThreadViewWidget, UiState, UndoHistoryWidget,
 };
 
 /// Renders the entire application UI
@@ -107,6 +107,16 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
 
             // Render undo history modal on top
             let widget = UndoHistoryWidget::new(app, *offset);
+            frame.render_widget(widget, chunks[0]);
+        }
+        View::EmailBody => {
+            ui_state.viewport_heights.text_view = inner_height;
+
+            // Clamp scroll position to valid range
+            // (we don't know exact line count but prevent going too far)
+            let scroll = app.text_view_scroll.min(10000);
+
+            let widget = TextViewWidget::new(app, scroll, &ui_state.text_view_state);
             frame.render_widget(widget, chunks[0]);
         }
     }

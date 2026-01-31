@@ -20,6 +20,7 @@ pub enum View {
     EmailList,
     Thread,
     UndoHistory,
+    EmailBody,
 }
 
 /// Filter for which emails/threads to display
@@ -140,6 +141,10 @@ pub struct App {
     emails_loaded: bool,
     /// Set of selected email IDs (for multi-select operations)
     selected_emails: HashSet<String>,
+    /// Scroll position for text view
+    pub text_view_scroll: usize,
+    /// ID of the email being viewed in text view (for body caching)
+    viewing_email_id: Option<String>,
 }
 
 impl Default for App {
@@ -167,6 +172,8 @@ impl App {
             viewing_group_key: None,
             emails_loaded: false,
             selected_emails: HashSet::new(),
+            text_view_scroll: 0,
+            viewing_email_id: None,
         }
     }
 
@@ -278,6 +285,7 @@ impl App {
             View::EmailList => self.select_next_email(),
             View::Thread => self.select_next_thread_email(),
             View::UndoHistory => self.select_next_undo(),
+            View::EmailBody => self.scroll_text_view_down(1),
         }
     }
 
@@ -288,6 +296,7 @@ impl App {
             View::EmailList => self.select_previous_email(),
             View::Thread => self.select_previous_thread_email(),
             View::UndoHistory => self.select_previous_undo(),
+            View::EmailBody => self.scroll_text_view_up(1),
         }
     }
 
@@ -334,6 +343,9 @@ impl App {
                     self.selected_undo = 0;
                 }
             }
+            View::EmailBody => {
+                self.text_view_scroll = 0;
+            }
         }
     }
 
@@ -366,6 +378,10 @@ impl App {
                 if !self.undo_history.is_empty() {
                     self.selected_undo = self.undo_history.len() - 1;
                 }
+            }
+            View::EmailBody => {
+                // Scroll to bottom - will be clamped by renderer
+                self.text_view_scroll = usize::MAX;
             }
         }
     }
@@ -422,6 +438,9 @@ impl App {
                 } else if self.selected_undo >= self.undo_history.len() {
                     self.selected_undo = self.undo_history.len() - 1;
                 }
+            }
+            View::EmailBody => {
+                // Scroll position is managed by the renderer
             }
         }
     }
@@ -587,8 +606,9 @@ impl App {
         match self.view {
             View::GroupList => self.enter_group(),
             View::EmailList => self.enter_thread(),
-            View::Thread => {}      // Already at deepest level
+            View::Thread => {} // Enter handled separately in main.rs (text view)
             View::UndoHistory => {} // Enter handled separately in main.rs
+            View::EmailBody => {} // Already viewing email
         }
     }
 
@@ -599,6 +619,7 @@ impl App {
             View::EmailList => self.exit_to_groups(),
             View::Thread => self.exit_to_emails(),
             View::UndoHistory => self.exit_undo_history(),
+            View::EmailBody => self.exit_text_view(),
         }
     }
 
@@ -638,6 +659,60 @@ impl App {
         self.view = View::EmailList;
         self.selected_thread_email = None;
         self.clear_selection();
+    }
+
+    /// Enters the text view for viewing an email body
+    pub fn enter_text_view(&mut self, email_id: &str) {
+        self.previous_view = Some(self.view);
+        self.viewing_email_id = Some(email_id.to_string());
+        self.text_view_scroll = 0;
+        self.view = View::EmailBody;
+    }
+
+    /// Exits the text view and returns to the previous view
+    pub fn exit_text_view(&mut self) {
+        if let Some(prev) = self.previous_view.take() {
+            self.view = prev;
+        } else {
+            self.view = View::EmailList;
+        }
+        self.viewing_email_id = None;
+    }
+
+    /// Returns the email being viewed in text view
+    pub fn viewing_email(&self) -> Option<&Email> {
+        self.viewing_email_id
+            .as_ref()
+            .and_then(|id| self.emails.iter().find(|e| &e.id == id))
+    }
+
+    /// Returns the ID of the email being viewed in text view
+    pub fn viewing_email_id(&self) -> Option<&str> {
+        self.viewing_email_id.as_deref()
+    }
+
+    /// Sets the body of an email (caches the fetched body)
+    pub fn set_email_body(&mut self, email_id: &str, body: String) {
+        if let Some(email) = self.emails.iter_mut().find(|e| e.id == email_id) {
+            email.body = Some(body);
+        }
+    }
+
+    /// Scrolls the text view down by n lines
+    pub fn scroll_text_view_down(&mut self, n: usize) {
+        self.text_view_scroll = self.text_view_scroll.saturating_add(n);
+    }
+
+    /// Scrolls the text view up by n lines
+    pub fn scroll_text_view_up(&mut self, n: usize) {
+        self.text_view_scroll = self.text_view_scroll.saturating_sub(n);
+    }
+
+    /// Gets the currently selected email in thread view
+    pub fn current_thread_email(&self) -> Option<&Email> {
+        let thread_emails = self.current_thread_emails();
+        self.selected_thread_email
+            .and_then(|idx| thread_emails.get(idx).copied())
     }
 
     /// Gets the currently selected group, if any
@@ -951,13 +1026,6 @@ impl App {
             .collect()
     }
 
-    /// Gets the currently selected email in thread view
-    pub fn current_thread_email(&self) -> Option<&Email> {
-        let thread_emails = self.current_thread_emails();
-        self.selected_thread_email
-            .and_then(|idx| thread_emails.get(idx).copied())
-    }
-
     /// Toggles selection of the currently highlighted email in EmailList view.
     /// Returns the result of the toggle attempt.
     pub fn toggle_email_selection(&mut self) -> SelectionResult {
@@ -1079,6 +1147,7 @@ impl App {
             View::EmailList => self.search_first_email(&query_lower),
             View::Thread => self.search_first_thread_email(&query_lower),
             View::UndoHistory => self.search_first_undo(&query_lower),
+            View::EmailBody => false, // Search not supported in text view
         }
     }
 
@@ -1095,6 +1164,7 @@ impl App {
             View::EmailList => self.search_next_email(&query_lower),
             View::Thread => self.search_next_thread_email(&query_lower),
             View::UndoHistory => self.search_next_undo(&query_lower),
+            View::EmailBody => false, // Search not supported in text view
         }
     }
 
@@ -1111,6 +1181,7 @@ impl App {
             View::EmailList => self.search_previous_email(&query_lower),
             View::Thread => self.search_previous_thread_email(&query_lower),
             View::UndoHistory => self.search_previous_undo(&query_lower),
+            View::EmailBody => false, // Search not supported in text view
         }
     }
 

@@ -30,7 +30,7 @@ use config::AccountConfig;
 use email::Email;
 use imap_client::{EmailClient, ImapClient};
 use ui::render::{render, render_account_select};
-use ui::widgets::{AccountSelection, ConfirmAction, UiState, WARNING_CHAR};
+use ui::widgets::{AccountSelection, ConfirmAction, TextViewState, UiState, WARNING_CHAR};
 
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
@@ -44,6 +44,11 @@ enum ImapCommand {
     /// Vec<(message_id, dest_uid, current_folder, dest_folder)>
     /// dest_uid is used for fast restore if available, falls back to Message-ID search
     RestoreEmails(Vec<(Option<String>, Option<u32>, String, String)>),
+    /// Fetch email body (uid, folder)
+    FetchBody {
+        uid: String,
+        folder: String,
+    },
     Shutdown,
 }
 
@@ -59,6 +64,11 @@ enum ImapResponse {
     /// Multi-delete result with source UID -> dest UID mapping from COPYUID
     MultiDeleteResult(Result<HashMap<String, u32>>),
     RestoreResult(Result<()>),
+    /// Email body fetch result with UID
+    BodyResult {
+        uid: String,
+        result: Result<String>,
+    },
     /// Progress update during bulk operations (current, total, action)
     Progress(usize, usize, String),
     /// Retry status update (attempt number, max attempts, operation description)
@@ -88,7 +98,7 @@ OPTIONS:
 
 NAVIGATION:
     j/k              Move down/up in lists
-    Enter            Select group or email / expand thread
+    Enter            Select group or email / view email body
     Escape           Go back to previous view
     Tab              Toggle between email and domain grouping
     /                Search emails
@@ -100,6 +110,7 @@ ACTIONS:
     d                Delete email (in group/email view)
     A                Archive all emails from sender (with confirmation)
     D                Delete all emails from sender (with confirmation)
+    e                Open email in browser (Gmail)
     u                Undo last action
 
 CONFIG:
@@ -636,6 +647,52 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
+            // Handle TextView separately (demo mode)
+            if app.view == View::EmailBody {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        ui_state.set_confirm(ConfirmAction::Quit);
+                    }
+                    KeyCode::Esc => {
+                        app.exit_text_view();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        app.scroll_text_view_down(1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        app.scroll_text_view_up(1);
+                    }
+                    KeyCode::Char('g') => {
+                        if pending_g {
+                            app.text_view_scroll = 0;
+                            pending_g = false;
+                        } else {
+                            pending_g = true;
+                        }
+                    }
+                    KeyCode::Char('G') => {
+                        pending_g = false;
+                        app.text_view_scroll = usize::MAX;
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let half_page = ui_state.viewport_heights.text_view / 2;
+                        app.scroll_text_view_down(half_page.max(1));
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let half_page = ui_state.viewport_heights.text_view / 2;
+                        app.scroll_text_view_up(half_page.max(1));
+                    }
+                    KeyCode::Char('e') => {
+                        ui_state.set_status("Demo mode: would open email in browser".to_string());
+                    }
+                    KeyCode::Char('?') => {
+                        ui_state.show_help();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // Normal input handling
             match key.code {
                 KeyCode::Char('q') => {
@@ -662,15 +719,53 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 }
                 KeyCode::Enter => {
                     if app.view == View::Thread {
-                        // In demo mode, open in browser is simulated
-                        ui_state.set_status("Demo mode: would open email in browser".to_string());
+                        // Enter text view for the selected email in thread (demo mode)
+                        if let Some(email) = app.current_thread_email() {
+                            let email_id = email.id.clone();
+                            let from = email.from.clone();
+                            let subject = email.subject.clone();
+                            app.enter_text_view(&email_id);
+                            // In demo mode, simulate having a body already loaded
+                            let body = format!(
+                                "This is a demo email body.\n\n\
+                                In real mode, the actual email content would be fetched from the server.\n\n\
+                                From: {}\n\
+                                Subject: {}\n\n\
+                                Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
+                                Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+                                from, subject
+                            );
+                            ui_state.text_view_state = TextViewState::Loaded(body);
+                        }
                     } else if app.view == View::EmailList
                         && !app.current_email_is_multi_message_thread()
                     {
-                        // Single email - open directly (no thread view needed)
-                        ui_state.set_status("Demo mode: would open email in browser".to_string());
+                        // Single email - enter text view directly (demo mode)
+                        if let Some(email) = app.current_email() {
+                            let email_id = email.id.clone();
+                            let from = email.from.clone();
+                            let subject = email.subject.clone();
+                            app.enter_text_view(&email_id);
+                            // In demo mode, simulate having a body already loaded
+                            let body = format!(
+                                "This is a demo email body.\n\n\
+                                In real mode, the actual email content would be fetched from the server.\n\n\
+                                From: {}\n\
+                                Subject: {}\n\n\
+                                Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
+                                Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+                                from, subject
+                            );
+                            ui_state.text_view_state = TextViewState::Loaded(body);
+                        }
                     } else {
                         app.enter();
+                    }
+                }
+                KeyCode::Char('e') => {
+                    // Open in browser (demo mode)
+                    if matches!(app.view, View::Thread | View::EmailList) {
+                        ui_state.set_status("Demo mode: would open email in browser".to_string());
                     }
                 }
                 KeyCode::Char('g') => {
@@ -966,7 +1061,7 @@ fn handle_demo_archive(
     protect_threads: bool,
 ) -> Option<DemoPendingOp> {
     match app.view {
-        View::GroupList | View::UndoHistory => None,
+        View::GroupList | View::UndoHistory | View::EmailBody => None,
         View::EmailList => {
             // Check if there are selected emails - require confirmation
             if app.has_selection() {
@@ -998,7 +1093,7 @@ fn handle_demo_archive(
 /// Handles 'A' key in demo mode
 fn handle_demo_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
-        View::GroupList | View::UndoHistory => {}
+        View::GroupList | View::UndoHistory | View::EmailBody => {}
         View::EmailList => {
             // If there are selected emails, archive only those
             if app.has_selection() {
@@ -1042,7 +1137,7 @@ fn handle_demo_delete(
     protect_threads: bool,
 ) -> Option<DemoPendingOp> {
     match app.view {
-        View::GroupList | View::UndoHistory => None,
+        View::GroupList | View::UndoHistory | View::EmailBody => None,
         View::EmailList => {
             // Check if there are selected emails - require confirmation
             if app.has_selection() {
@@ -1074,7 +1169,7 @@ fn handle_demo_delete(
 /// Handles 'D' key in demo mode
 fn handle_demo_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
-        View::GroupList | View::UndoHistory => {}
+        View::GroupList | View::UndoHistory | View::EmailBody => {}
         View::EmailList => {
             // If there are selected emails, delete only those
             if app.has_selection() {
@@ -1797,6 +1892,11 @@ fn spawn_imap_worker(
 
                     let _ = resp_tx.send(ImapResponse::RestoreResult(result));
                 }
+                ImapCommand::FetchBody { uid, folder } => {
+                    debug_log!("IMAP worker: fetching body for UID {} from {}", uid, folder);
+                    let result = client.fetch_email_body(&uid, &folder);
+                    let _ = resp_tx.send(ImapResponse::BodyResult { uid, result });
+                }
                 ImapCommand::Shutdown => {
                     debug_log!("IMAP worker: shutdown requested");
                     break;
@@ -2144,6 +2244,21 @@ fn run_app(
                         action, attempt, max_attempts
                     ));
                 }
+                ImapResponse::BodyResult { uid, result } => {
+                    // Check if we're still viewing this email
+                    if app.viewing_email_id() == Some(&uid) {
+                        match result {
+                            Ok(body) => {
+                                // Cache the body and update state
+                                app.set_email_body(&uid, body.clone());
+                                ui_state.text_view_state = TextViewState::Loaded(body);
+                            }
+                            Err(e) => {
+                                ui_state.text_view_state = TextViewState::Error(format!("{}", e));
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -2366,6 +2481,61 @@ fn run_app(
                 continue;
             }
 
+            // Handle TextView separately
+            if app.view == View::EmailBody {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        ui_state.set_confirm(ConfirmAction::Quit);
+                    }
+                    KeyCode::Esc => {
+                        app.exit_text_view();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        app.scroll_text_view_down(1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        app.scroll_text_view_up(1);
+                    }
+                    KeyCode::Char('g') => {
+                        if pending_g {
+                            app.text_view_scroll = 0;
+                            pending_g = false;
+                        } else {
+                            pending_g = true;
+                        }
+                    }
+                    KeyCode::Char('G') => {
+                        pending_g = false;
+                        app.text_view_scroll = usize::MAX; // Will be clamped by renderer
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let half_page = ui_state.viewport_heights.text_view / 2;
+                        app.scroll_text_view_down(half_page.max(1));
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let half_page = ui_state.viewport_heights.text_view / 2;
+                        app.scroll_text_view_up(half_page.max(1));
+                    }
+                    KeyCode::Char('e') => {
+                        // Open in browser
+                        if let Some(email) = app.viewing_email() {
+                            if let Some(ref message_id) = email.message_id {
+                                if let Err(e) = open_email_in_browser(message_id, &user_email) {
+                                    ui_state.set_status(format!("Failed to open browser: {}", e));
+                                }
+                            } else {
+                                ui_state.set_status("Email has no Message-ID".to_string());
+                            }
+                        }
+                    }
+                    KeyCode::Char('?') => {
+                        ui_state.show_help();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // Normal input handling
             match key.code {
                 KeyCode::Char('q') => {
@@ -2392,31 +2562,73 @@ fn run_app(
                 }
                 KeyCode::Enter => {
                     if app.view == View::Thread {
-                        // Open email in browser for security (avoids terminal escape attacks)
+                        // Enter text view for the selected email in thread
                         if let Some(email) = app.current_thread_email() {
-                            if let Some(ref message_id) = email.message_id {
-                                if let Err(e) = open_email_in_browser(message_id, &user_email) {
-                                    ui_state.set_status(format!("Failed to open browser: {}", e));
+                            let email_id = email.id.clone();
+                            let folder = email.source_folder.clone();
+                            let has_body = email.body.is_some();
+                            app.enter_text_view(&email_id);
+
+                            if has_body {
+                                // Body already cached
+                                if let Some(body) = app.viewing_email().and_then(|e| e.body.clone())
+                                {
+                                    ui_state.text_view_state = TextViewState::Loaded(body);
                                 }
                             } else {
-                                ui_state.set_status("Email has no Message-ID".to_string());
+                                // Need to fetch body
+                                ui_state.text_view_state = TextViewState::Loading;
+                                cmd_tx.send(ImapCommand::FetchBody {
+                                    uid: email_id,
+                                    folder,
+                                })?;
                             }
                         }
                     } else if app.view == View::EmailList
                         && !app.current_email_is_multi_message_thread()
                     {
-                        // Single email - open directly in browser (no thread view needed)
+                        // Single email - enter text view directly (no thread view needed)
                         if let Some(email) = app.current_email() {
-                            if let Some(ref message_id) = email.message_id {
-                                if let Err(e) = open_email_in_browser(message_id, &user_email) {
-                                    ui_state.set_status(format!("Failed to open browser: {}", e));
+                            let email_id = email.id.clone();
+                            let folder = email.source_folder.clone();
+                            let has_body = email.body.is_some();
+                            app.enter_text_view(&email_id);
+
+                            if has_body {
+                                // Body already cached
+                                if let Some(body) = app.viewing_email().and_then(|e| e.body.clone())
+                                {
+                                    ui_state.text_view_state = TextViewState::Loaded(body);
                                 }
                             } else {
-                                ui_state.set_status("Email has no Message-ID".to_string());
+                                // Need to fetch body
+                                ui_state.text_view_state = TextViewState::Loading;
+                                cmd_tx.send(ImapCommand::FetchBody {
+                                    uid: email_id,
+                                    folder,
+                                })?;
                             }
                         }
                     } else {
                         app.enter();
+                    }
+                }
+                KeyCode::Char('e') => {
+                    // Open email in browser
+                    let email_to_open = match app.view {
+                        View::Thread => app.current_thread_email(),
+                        View::EmailList => app.current_email(),
+                        View::EmailBody => app.viewing_email(),
+                        _ => None,
+                    };
+                    if let Some(email) = email_to_open {
+                        if let Some(ref message_id) = email.message_id {
+                            if let Err(e) = open_email_in_browser(message_id, &user_email) {
+                                ui_state.set_status(format!("Failed to open browser: {}", e));
+                            }
+                        } else {
+                            ui_state.set_status("Email has no Message-ID".to_string());
+                        }
                     }
                 }
                 KeyCode::Char('g') => {
@@ -2568,8 +2780,8 @@ fn handle_archive(
     protect_threads: bool,
 ) -> Result<()> {
     match app.view {
-        View::GroupList | View::UndoHistory => {
-            // No action on single 'a' in group list or undo history
+        View::GroupList | View::UndoHistory | View::EmailBody => {
+            // No action on single 'a' in group list, undo history, or text view
         }
         View::EmailList => {
             // Check if there are selected emails - require confirmation
@@ -2617,8 +2829,8 @@ fn handle_archive(
 /// Handles the 'A' key - archive all in group
 fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
-        View::GroupList | View::UndoHistory => {
-            // No 'A' in group list view or undo history to prevent accidental bulk operations
+        View::GroupList | View::UndoHistory | View::EmailBody => {
+            // No 'A' in group list view, undo history, or text view to prevent accidental bulk operations
         }
         View::EmailList => {
             // If there are selected emails, archive only those
@@ -2666,8 +2878,8 @@ fn handle_delete(
     protect_threads: bool,
 ) -> Result<()> {
     match app.view {
-        View::GroupList | View::UndoHistory => {
-            // No action on single 'd' in group list or undo history
+        View::GroupList | View::UndoHistory | View::EmailBody => {
+            // No action on single 'd' in group list, undo history, or text view
         }
         View::EmailList => {
             // Check if there are selected emails - require confirmation
@@ -2715,8 +2927,8 @@ fn handle_delete(
 /// Handles the 'D' key - delete all in group
 fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
     match app.view {
-        View::GroupList | View::UndoHistory => {
-            // No 'D' in group list view or undo history to prevent accidental bulk operations
+        View::GroupList | View::UndoHistory | View::EmailBody => {
+            // No 'D' in group list view, undo history, or text view to prevent accidental bulk operations
         }
         View::EmailList => {
             // If there are selected emails, delete only those
