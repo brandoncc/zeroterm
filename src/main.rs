@@ -996,6 +996,15 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState, protect_threads: b
     match app.view {
         View::GroupList | View::UndoHistory => {}
         View::EmailList => {
+            // If there are selected emails, archive only those
+            if app.has_selection() {
+                let count = app.selected_email_ids().len();
+                if count > 0 {
+                    ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
+                }
+                return;
+            }
+
             if let Some(group) = app.current_group() {
                 // Protect threads: require reviewing each thread separately if group has multi-message threads
                 if protect_threads && app.group_has_multi_message_threads(group) {
@@ -1063,6 +1072,15 @@ fn handle_demo_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bo
     match app.view {
         View::GroupList | View::UndoHistory => {}
         View::EmailList => {
+            // If there are selected emails, delete only those
+            if app.has_selection() {
+                let count = app.selected_email_ids().len();
+                if count > 0 {
+                    ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
+                }
+                return;
+            }
+
             if let Some(group) = app.current_group() {
                 // Protect threads: require reviewing each thread separately if group has multi-message threads
                 if protect_threads && app.group_has_multi_message_threads(group) {
@@ -2592,6 +2610,15 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) 
             // No 'A' in group list view or undo history to prevent accidental bulk operations
         }
         View::EmailList => {
+            // If there are selected emails, archive only those
+            if app.has_selection() {
+                let count = app.selected_email_ids().len();
+                if count > 0 {
+                    ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
+                }
+                return;
+            }
+
             if let Some(group) = app.current_group() {
                 if protect_threads && app.group_has_multi_message_threads(group) {
                     ui_state.set_status(format!(
@@ -2680,6 +2707,15 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
             // No 'D' in group list view or undo history to prevent accidental bulk operations
         }
         View::EmailList => {
+            // If there are selected emails, delete only those
+            if app.has_selection() {
+                let count = app.selected_email_ids().len();
+                if count > 0 {
+                    ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
+                }
+                return;
+            }
+
             if let Some(group) = app.current_group() {
                 if protect_threads && app.group_has_multi_message_threads(group) {
                     ui_state.set_status(format!(
