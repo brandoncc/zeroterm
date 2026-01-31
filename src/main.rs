@@ -1009,18 +1009,18 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState, protect_threads: b
                 return;
             }
 
+            // Protect threads: require reviewing each thread separately if filtered emails contain threads
+            if protect_threads && app.filtered_has_multi_message_threads() {
+                ui_state.set_status(format!(
+                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
+                    WARNING_CHAR
+                ));
+                return;
+            }
             if let Some(group) = app.current_group() {
-                // Protect threads: require reviewing each thread separately if group has multi-message threads
-                if protect_threads && app.group_has_multi_message_threads(group) {
-                    ui_state.set_status(format!(
-                        "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
-                        WARNING_CHAR
-                    ));
-                    return;
-                }
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
-                    count: group.count(),
+                    count: app.filtered_email_count(),
                 });
             }
         }
@@ -1085,18 +1085,18 @@ fn handle_demo_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bo
                 return;
             }
 
+            // Protect threads: require reviewing each thread separately if filtered emails contain threads
+            if protect_threads && app.filtered_has_multi_message_threads() {
+                ui_state.set_status(format!(
+                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
+                    WARNING_CHAR
+                ));
+                return;
+            }
             if let Some(group) = app.current_group() {
-                // Protect threads: require reviewing each thread separately if group has multi-message threads
-                if protect_threads && app.group_has_multi_message_threads(group) {
-                    ui_state.set_status(format!(
-                        "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
-                        WARNING_CHAR
-                    ));
-                    return;
-                }
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
-                    count: group.count(),
+                    count: app.filtered_email_count(),
                 });
             }
         }
@@ -1126,17 +1126,20 @@ fn handle_demo_undo(app: &App, undo_storage: &mut DemoUndoStorage) -> Option<Dem
 fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<DemoPendingOp> {
     match action {
         ConfirmAction::ArchiveEmails { sender, .. } => {
-            app.current_group()
-                .map(|group| DemoPendingOp::ArchiveGroup {
-                    emails: group.emails.clone(),
-                    sender,
-                })
+            let emails = app.filtered_emails_cloned();
+            if emails.is_empty() {
+                None
+            } else {
+                Some(DemoPendingOp::ArchiveGroup { emails, sender })
+            }
         }
         ConfirmAction::DeleteEmails { sender, .. } => {
-            app.current_group().map(|group| DemoPendingOp::DeleteGroup {
-                emails: group.emails.clone(),
-                sender,
-            })
+            let emails = app.filtered_emails_cloned();
+            if emails.is_empty() {
+                None
+            } else {
+                Some(DemoPendingOp::DeleteGroup { emails, sender })
+            }
         }
         ConfirmAction::ArchiveThread { .. } => app.current_email().map(|email| {
             let thread_emails: Vec<Email> = app
@@ -2627,17 +2630,18 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) 
                 return;
             }
 
+            // Protect threads: require reviewing each thread separately if filtered emails contain threads
+            if protect_threads && app.filtered_has_multi_message_threads() {
+                ui_state.set_status(format!(
+                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
+                    WARNING_CHAR
+                ));
+                return;
+            }
             if let Some(group) = app.current_group() {
-                if protect_threads && app.group_has_multi_message_threads(group) {
-                    ui_state.set_status(format!(
-                        "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
-                        WARNING_CHAR
-                    ));
-                    return;
-                }
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
-                    count: group.count(),
+                    count: app.filtered_email_count(),
                 });
             }
         }
@@ -2724,17 +2728,18 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
                 return;
             }
 
+            // Protect threads: require reviewing each thread separately if filtered emails contain threads
+            if protect_threads && app.filtered_has_multi_message_threads() {
+                ui_state.set_status(format!(
+                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
+                    WARNING_CHAR
+                ));
+                return;
+            }
             if let Some(group) = app.current_group() {
-                if protect_threads && app.group_has_multi_message_threads(group) {
-                    ui_state.set_status(format!(
-                        "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
-                        WARNING_CHAR
-                    ));
-                    return;
-                }
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
-                    count: group.count(),
+                    count: app.filtered_email_count(),
                 });
             }
         }
