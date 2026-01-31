@@ -141,6 +141,19 @@ email = "you@gmail.com"
 app_password = "xxxx xxxx xxxx xxxx"
 ```
 
+### Advance on Select
+
+By default, pressing space to select an email automatically moves to the next email. This allows quickly selecting multiple emails in sequence. To disable this behavior:
+
+```toml
+advance_on_select = false
+
+[accounts.personal]
+backend = "gmail"
+email = "you@gmail.com"
+app_password = "xxxx xxxx xxxx xxxx"
+```
+
 ## Usage
 
 ```sh

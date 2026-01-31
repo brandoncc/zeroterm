@@ -38,6 +38,10 @@ fn default_debug() -> bool {
     false
 }
 
+fn default_advance_on_select() -> bool {
+    true
+}
+
 /// Top-level configuration containing all accounts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -52,6 +56,9 @@ pub struct Config {
     /// Enable debug logging to ~/.config/zeroterm/debug.log (default: false)
     #[serde(default = "default_debug")]
     pub debug: bool,
+    /// Move to next email after toggling selection with space (default: true)
+    #[serde(default = "default_advance_on_select")]
+    pub advance_on_select: bool,
 }
 
 /// Returns the configuration directory path
@@ -147,6 +154,7 @@ pub fn load_config_with_resolver(resolver: &impl SecretResolver) -> Result<Confi
         protect_threads: config.protect_threads,
         parallel_connections: config.parallel_connections,
         debug: config.debug,
+        advance_on_select: config.advance_on_select,
     })
 }
 
@@ -272,6 +280,32 @@ app_password = "xxxx"
 "#;
         let config: Config = toml::from_str(toml_content).unwrap();
         assert!(config.debug);
+    }
+
+    #[test]
+    fn test_advance_on_select_defaults_to_true() {
+        let toml_content = r#"
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert!(config.advance_on_select);
+    }
+
+    #[test]
+    fn test_advance_on_select_can_be_disabled() {
+        let toml_content = r#"
+advance_on_select = false
+
+[accounts.personal]
+backend = "gmail"
+email = "user@gmail.com"
+app_password = "xxxx"
+"#;
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert!(!config.advance_on_select);
     }
 
     #[test]
