@@ -89,7 +89,7 @@ OPTIONS:
 NAVIGATION:
     j/k              Move down/up in lists
     Enter            Select group or email / expand thread
-    Backspace        Go back to previous view
+    Escape           Go back to previous view
     Tab              Toggle between email and domain grouping
     /                Search emails
     n/N              Next/previous search result
@@ -591,7 +591,10 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
             // Handle UndoHistory view separately
             if app.view == View::UndoHistory {
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
+                    KeyCode::Char('q') => {
+                        ui_state.set_confirm(ConfirmAction::Quit);
+                    }
+                    KeyCode::Esc => {
                         app.exit_undo_history();
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
@@ -636,9 +639,10 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
             // Normal input handling
             match key.code {
                 KeyCode::Char('q') => {
-                    if app.view == View::GroupList {
-                        ui_state.set_confirm(ConfirmAction::Quit);
-                    } else {
+                    ui_state.set_confirm(ConfirmAction::Quit);
+                }
+                KeyCode::Esc => {
+                    if app.view != View::GroupList {
                         app.exit();
                     }
                 }
@@ -2296,7 +2300,10 @@ fn run_app(
             // Handle UndoHistory view separately
             if app.view == View::UndoHistory {
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
+                    KeyCode::Char('q') => {
+                        ui_state.set_confirm(ConfirmAction::Quit);
+                    }
+                    KeyCode::Esc => {
                         app.exit_undo_history();
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
@@ -2359,9 +2366,10 @@ fn run_app(
             // Normal input handling
             match key.code {
                 KeyCode::Char('q') => {
-                    if app.view == View::GroupList {
-                        ui_state.set_confirm(ConfirmAction::Quit);
-                    } else {
+                    ui_state.set_confirm(ConfirmAction::Quit);
+                }
+                KeyCode::Esc => {
+                    if app.view != View::GroupList {
                         app.exit();
                     }
                 }

@@ -49,7 +49,8 @@ This design ensures you always know exactly what emails will be affected before 
 | `N` | Previous search match |
 | `m` | Toggle grouping mode (email/domain) |
 | `r` | Refresh emails |
-| `q` | Quit / Go back |
+| `q` | Quit |
+| `Escape` | Go back to previous view |
 
 ### Search Mode
 | Key | Action |
