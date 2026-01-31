@@ -592,7 +592,7 @@ impl Widget for GroupListWidget<'_> {
         let filtered_groups = self.app.filtered_groups();
         let total_emails: usize = filtered_groups
             .iter()
-            .map(|g| self.app.filtered_email_count_for_group(g))
+            .map(|g| self.app.full_thread_email_count_for_group(g))
             .sum();
         let title = format!(
             " Senders (by {}){} — {} emails in {} groups ",
@@ -656,7 +656,7 @@ impl Widget for GroupListWidget<'_> {
             };
 
             let thread_count = self.app.filtered_thread_count_for_group(group);
-            let email_count = self.app.filtered_email_count_for_group(group);
+            let email_count = self.app.full_thread_email_count_for_group(group);
             let line = if thread_count == email_count {
                 // Each email is its own thread (or in NoThreads mode)
                 format!("{}{} ({} emails)", thread_indicator, group.key, email_count)
@@ -702,7 +702,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         // Get the title - use current group if available, otherwise use viewing_group_key
         let title = if let Some(g) = self.app.current_group() {
             let thread_count = self.app.filtered_thread_count_for_group(g);
-            let email_count = self.app.filtered_email_count_for_group(g);
+            let email_count = self.app.full_thread_email_count_for_group(g);
             if thread_count == email_count {
                 format!(
                     " Threads from {}{} — {} threads ",

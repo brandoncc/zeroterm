@@ -125,6 +125,8 @@ pub struct App {
     emails: Vec<Email>,
     /// Cache of thread IDs that have multiple messages (for O(1) lookup)
     multi_message_threads: HashSet<String>,
+    /// Cache of email counts per thread_id (for calculating full thread counts)
+    thread_email_counts: HashMap<String, usize>,
     /// The user's email address (used to filter out sent emails from groups)
     user_email: Option<String>,
     /// Filter for which threads to display
@@ -164,6 +166,7 @@ impl App {
             view: View::default(),
             emails: Vec::new(),
             multi_message_threads: HashSet::new(),
+            thread_email_counts: HashMap::new(),
             user_email: None,
             thread_filter: ThreadFilter::All,
             undo_history: Vec::new(),
@@ -194,13 +197,19 @@ impl App {
         self.regroup();
     }
 
-    /// Rebuilds the cache of thread IDs with multiple messages
+    /// Rebuilds the cache of thread IDs with multiple messages and email counts per thread
     fn rebuild_multi_message_cache(&mut self) {
         // Count emails per thread_id
         let mut thread_counts: HashMap<&str, usize> = HashMap::new();
         for email in &self.emails {
             *thread_counts.entry(&email.thread_id).or_default() += 1;
         }
+
+        // Store email counts per thread for full thread count calculations
+        self.thread_email_counts = thread_counts
+            .iter()
+            .map(|(thread_id, count)| (thread_id.to_string(), *count))
+            .collect();
 
         // Collect thread IDs with more than one email
         self.multi_message_threads = thread_counts
@@ -897,23 +906,6 @@ impl App {
             .any(|e| self.multi_message_threads.contains(&e.thread_id))
     }
 
-    /// Returns the filtered email count for a specific group
-    pub fn filtered_email_count_for_group(&self, group: &EmailGroup) -> usize {
-        match self.thread_filter {
-            ThreadFilter::All => group.count(),
-            ThreadFilter::OnlyThreads => group
-                .emails
-                .iter()
-                .filter(|e| self.multi_message_threads.contains(&e.thread_id))
-                .count(),
-            ThreadFilter::NoThreads => group
-                .emails
-                .iter()
-                .filter(|e| !self.multi_message_threads.contains(&e.thread_id))
-                .count(),
-        }
-    }
-
     /// Returns the filtered thread count for a specific group
     pub fn filtered_thread_count_for_group(&self, group: &EmailGroup) -> usize {
         match self.thread_filter {
@@ -936,6 +928,33 @@ impl App {
                     .count()
             }
         }
+    }
+
+    /// Returns the full thread email count for a group (all emails in all threads, including
+    /// emails from other senders that would be shown in thread view).
+    pub fn full_thread_email_count_for_group(&self, group: &EmailGroup) -> usize {
+        // Get unique thread IDs in this group, filtered by current thread filter
+        let thread_ids: HashSet<&str> = match self.thread_filter {
+            ThreadFilter::All => group.emails.iter().map(|e| e.thread_id.as_str()).collect(),
+            ThreadFilter::OnlyThreads => group
+                .emails
+                .iter()
+                .filter(|e| self.multi_message_threads.contains(&e.thread_id))
+                .map(|e| e.thread_id.as_str())
+                .collect(),
+            ThreadFilter::NoThreads => group
+                .emails
+                .iter()
+                .filter(|e| !self.multi_message_threads.contains(&e.thread_id))
+                .map(|e| e.thread_id.as_str())
+                .collect(),
+        };
+
+        // Sum up email counts for all threads
+        thread_ids
+            .iter()
+            .map(|tid| self.thread_email_counts.get(*tid).copied().unwrap_or(1))
+            .sum()
     }
 
     /// Removes an email by ID and regroups
