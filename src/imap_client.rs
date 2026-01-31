@@ -145,6 +145,22 @@ fn extract_uid_ranges(uids: &[u32]) -> Vec<(u32, u32)> {
     ranges
 }
 
+/// Formats UID ranges as an IMAP sequence string
+/// Example: [(1,3), (5,5), (7,9)] -> "1:3,5,7:9"
+fn format_uid_sequence(ranges: &[(u32, u32)]) -> String {
+    ranges
+        .iter()
+        .map(|(start, end)| {
+            if start == end {
+                start.to_string()
+            } else {
+                format!("{}:{}", start, end)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Sends a UID MOVE command and returns the COPYUID mapping if available
 ///
 /// This uses the IMAP MOVE extension (RFC 6851) combined with UIDPLUS (RFC 4315)
@@ -384,7 +400,18 @@ impl EmailClient for ImapClient {
             .select(folder)
             .context(format!("Failed to select {}", folder))?;
 
-        let uid_sequence = uids.join(",");
+        // Convert to u32, extract ranges, and format as sequence
+        let uid_values: Vec<u32> = uids.iter().filter_map(|s| s.parse().ok()).collect();
+        let ranges = extract_uid_ranges(&uid_values);
+        let uid_sequence = format_uid_sequence(&ranges);
+
+        crate::debug_log!(
+            "archive_batch: {} UIDs compressed to {} ranges: {}",
+            uids.len(),
+            ranges.len(),
+            uid_sequence
+        );
+
         let uid_map = uid_move_with_copyuid(&mut self.session, &uid_sequence, "[Gmail]/All Mail")
             .context("Failed to archive emails")?;
 
@@ -407,7 +434,18 @@ impl EmailClient for ImapClient {
             .select(folder)
             .context(format!("Failed to select {}", folder))?;
 
-        let uid_sequence = uids.join(",");
+        // Convert to u32, extract ranges, and format as sequence
+        let uid_values: Vec<u32> = uids.iter().filter_map(|s| s.parse().ok()).collect();
+        let ranges = extract_uid_ranges(&uid_values);
+        let uid_sequence = format_uid_sequence(&ranges);
+
+        crate::debug_log!(
+            "delete_batch: {} UIDs compressed to {} ranges: {}",
+            uids.len(),
+            ranges.len(),
+            uid_sequence
+        );
+
         let uid_map = uid_move_with_copyuid(&mut self.session, &uid_sequence, "[Gmail]/Trash")
             .context("Failed to delete emails")?;
 
@@ -817,5 +855,33 @@ mod tests {
         // Duplicates should be handled
         let ranges = extract_uid_ranges(&[1, 1, 2, 2, 3, 5, 5]);
         assert_eq!(ranges, vec![(1, 3), (5, 5)]);
+    }
+
+    #[test]
+    fn test_format_uid_sequence_empty() {
+        assert_eq!(format_uid_sequence(&[]), "");
+    }
+
+    #[test]
+    fn test_format_uid_sequence_single() {
+        assert_eq!(format_uid_sequence(&[(42, 42)]), "42");
+    }
+
+    #[test]
+    fn test_format_uid_sequence_single_range() {
+        assert_eq!(format_uid_sequence(&[(1, 5)]), "1:5");
+    }
+
+    #[test]
+    fn test_format_uid_sequence_mixed() {
+        // Example: [(1,3), (5,5), (7,9)] -> "1:3,5,7:9"
+        let ranges = vec![(1, 3), (5, 5), (7, 9)];
+        assert_eq!(format_uid_sequence(&ranges), "1:3,5,7:9");
+    }
+
+    #[test]
+    fn test_format_uid_sequence_scattered() {
+        let ranges = vec![(1, 1), (3, 3), (5, 5)];
+        assert_eq!(format_uid_sequence(&ranges), "1,3,5");
     }
 }
