@@ -40,8 +40,6 @@ pub enum ThreadFilter {
 pub enum SelectionResult {
     /// Selection was toggled successfully
     Toggled,
-    /// Cannot select because email is part of a multi-message thread
-    IsThread,
     /// No email to select (wrong view or no current email)
     NoEmail,
 }
@@ -1147,11 +1145,6 @@ impl App {
         let Some(email) = self.current_email() else {
             return SelectionResult::NoEmail;
         };
-
-        // Don't allow selecting emails that are part of multi-message threads
-        if self.thread_has_multiple_messages(&email.thread_id) {
-            return SelectionResult::IsThread;
-        }
 
         let email_id = email.id.clone();
         if self.is_email_selected(&email_id) {
@@ -2473,7 +2466,7 @@ mod tests {
     }
 
     #[test]
-    fn test_toggle_email_selection_rejects_threads() {
+    fn test_toggle_email_selection_allows_threads() {
         let mut app = App::new();
         // Create a multi-message thread
         app.set_emails(vec![
@@ -2484,9 +2477,9 @@ mod tests {
         app.enter();
         assert_eq!(app.view, View::EmailList);
 
-        // Try to select an email that's part of a thread - should be rejected
-        assert_eq!(app.toggle_email_selection(), SelectionResult::IsThread);
-        assert_eq!(app.selected_email_count(), 0);
+        // Selecting an email that's part of a thread should work
+        assert_eq!(app.toggle_email_selection(), SelectionResult::Toggled);
+        assert_eq!(app.selected_email_count(), 1);
     }
 
     #[test]
