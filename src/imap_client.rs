@@ -11,14 +11,6 @@ use std::collections::HashMap;
 /// Trait for email operations - allows mocking in tests
 #[cfg_attr(test, mockall::automock)]
 pub trait EmailClient {
-    /// Archives an email (removes from inbox)
-    /// Returns the destination UID if COPYUID is supported by the server
-    fn archive_email(&mut self, email_id: &str, folder: &str) -> Result<Option<u32>>;
-
-    /// Deletes an email (moves to trash)
-    /// Returns the destination UID if COPYUID is supported by the server
-    fn delete_email(&mut self, email_id: &str, folder: &str) -> Result<Option<u32>>;
-
     /// Archives a batch of emails from a single folder (moves to All Mail)
     /// UIDs should be from the same folder for efficiency
     /// Returns a mapping of source UID -> destination UID (empty if COPYUID not supported)
@@ -363,32 +355,6 @@ impl ImapClient {
 }
 
 impl EmailClient for ImapClient {
-    fn archive_email(&mut self, uid: &str, folder: &str) -> Result<Option<u32>> {
-        self.session
-            .select(folder)
-            .context(format!("Failed to select {}", folder))?;
-
-        // Move to All Mail (Gmail's archive) and get destination UID
-        let uid_map = uid_move_with_copyuid(&mut self.session, uid, "[Gmail]/All Mail")
-            .context("Failed to archive email")?;
-
-        // Return the destination UID if available
-        Ok(uid_map.get(uid).copied())
-    }
-
-    fn delete_email(&mut self, uid: &str, folder: &str) -> Result<Option<u32>> {
-        self.session
-            .select(folder)
-            .context(format!("Failed to select {}", folder))?;
-
-        // Move to Trash and get destination UID
-        let uid_map = uid_move_with_copyuid(&mut self.session, uid, "[Gmail]/Trash")
-            .context("Failed to delete email")?;
-
-        // Return the destination UID if available
-        Ok(uid_map.get(uid).copied())
-    }
-
     fn archive_batch(&mut self, uids: &[String], folder: &str) -> Result<HashMap<String, u32>> {
         if uids.is_empty() {
             return Ok(HashMap::new());
@@ -851,39 +817,6 @@ mod tests {
         let list = "  <msg1@example.com>   <msg2@example.com>  ";
         let ids = parse_message_id_list(list);
         assert_eq!(ids, vec!["<msg1@example.com>", "<msg2@example.com>"]);
-    }
-
-    // Mock client tests
-    #[test]
-    fn test_mock_client_archive() {
-        let mut mock = MockEmailClient::new();
-
-        mock.expect_archive_email()
-            .with(
-                mockall::predicate::eq("email123"),
-                mockall::predicate::eq("INBOX"),
-            )
-            .returning(|_, _| Ok(Some(100))); // Returns destination UID
-
-        let result = mock.archive_email("email123", "INBOX");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(100));
-    }
-
-    #[test]
-    fn test_mock_client_delete() {
-        let mut mock = MockEmailClient::new();
-
-        mock.expect_delete_email()
-            .with(
-                mockall::predicate::eq("email456"),
-                mockall::predicate::eq("INBOX"),
-            )
-            .returning(|_, _| Ok(Some(200))); // Returns destination UID
-
-        let result = mock.delete_email("email456", "INBOX");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(200));
     }
 
     #[test]

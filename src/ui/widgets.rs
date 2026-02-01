@@ -31,17 +31,17 @@ fn format_date(date: &DateTime<Utc>) -> String {
 /// State for the confirmation dialog
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmAction {
-    /// Archive emails from a sender (only their emails, not full threads)
+    /// Archive all emails in threads touched by this sender's emails
     ArchiveEmails { sender: String, count: usize },
-    /// Delete emails from a sender (only their emails, not full threads)
+    /// Delete all emails in threads touched by this sender's emails
     DeleteEmails { sender: String, count: usize },
     /// Archive entire thread (all emails including other senders)
     ArchiveThread { thread_email_count: usize },
     /// Delete entire thread (all emails including other senders)
     DeleteThread { thread_email_count: usize },
-    /// Archive selected emails
+    /// Archive all emails in threads touched by selected emails
     ArchiveSelected { count: usize },
-    /// Delete selected emails
+    /// Delete all emails in threads touched by selected emails
     DeleteSelected { count: usize },
     /// Quit the application
     Quit,
@@ -1006,14 +1006,6 @@ impl<'a> UndoHistoryWidget<'a> {
         let email_word = if email_count == 1 { "email" } else { "emails" };
 
         match &entry.context {
-            UndoContext::SingleEmail { subject } => {
-                let truncated = if subject.len() > 40 {
-                    format!("{}...", &subject[..37])
-                } else {
-                    subject.clone()
-                };
-                format!("{} {} '{}' (1 email)", action_icon, action_verb, truncated)
-            }
             UndoContext::Group { sender } => {
                 format!(
                     "{} {} {} {} from {}",

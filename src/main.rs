@@ -30,15 +30,13 @@ use config::AccountConfig;
 use email::Email;
 use imap_client::{EmailClient, ImapClient};
 use ui::render::{render, render_account_select};
-use ui::widgets::{AccountSelection, ConfirmAction, TextViewState, UiState, WARNING_CHAR};
+use ui::widgets::{AccountSelection, ConfirmAction, TextViewState, UiState};
 
 /// Commands sent to the IMAP worker thread
 enum ImapCommand {
     FetchInbox {
         parallel_connections: usize,
     },
-    ArchiveEmail(String, String),           // (uid, folder)
-    DeleteEmail(String, String),            // (uid, folder)
     ArchiveMultiple(Vec<(String, String)>), // Vec<(uid, folder)>
     DeleteMultiple(Vec<(String, String)>),  // Vec<(uid, folder)>
     /// Vec<(message_id, dest_uid, current_folder, dest_folder)>
@@ -55,10 +53,6 @@ enum ImapCommand {
 /// Responses from the IMAP worker thread
 enum ImapResponse {
     Emails(Result<Vec<Email>>),
-    /// Single archive result with optional destination UID from COPYUID
-    ArchiveResult(Result<Option<u32>>),
-    /// Single delete result with optional destination UID from COPYUID
-    DeleteResult(Result<Option<u32>>),
     /// Multi-archive result with source UID -> dest UID mapping from COPYUID
     MultiArchiveResult(Result<HashMap<String, u32>>),
     /// Multi-delete result with source UID -> dest UID mapping from COPYUID
@@ -202,7 +196,6 @@ fn main() -> Result<()> {
         run_app(
             &mut terminal,
             account,
-            cfg.protect_threads,
             cfg.parallel_connections,
             cfg.advance_on_select,
         )
@@ -268,12 +261,6 @@ const DEMO_LATENCY_MS: u64 = 300;
 
 /// Pending operations in demo mode (mirrors PendingOp for real mode)
 enum DemoPendingOp {
-    ArchiveSingle {
-        email: Email,
-    },
-    DeleteSingle {
-        email: Email,
-    },
     ArchiveGroup {
         emails: Vec<Email>,
         sender: String,
@@ -312,12 +299,10 @@ impl DemoPendingOp {
     /// Returns the busy message to display while this operation is pending
     fn busy_message(&self) -> &'static str {
         match self {
-            DemoPendingOp::ArchiveSingle { .. }
-            | DemoPendingOp::ArchiveGroup { .. }
+            DemoPendingOp::ArchiveGroup { .. }
             | DemoPendingOp::ArchiveThread { .. }
             | DemoPendingOp::ArchiveSelected { .. } => "Archiving...",
-            DemoPendingOp::DeleteSingle { .. }
-            | DemoPendingOp::DeleteGroup { .. }
+            DemoPendingOp::DeleteGroup { .. }
             | DemoPendingOp::DeleteThread { .. }
             | DemoPendingOp::DeleteSelected { .. } => "Deleting...",
             DemoPendingOp::Undo { .. } => "Restoring...",
@@ -364,8 +349,7 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
     let mut pending_op: Option<DemoPendingOp> = None;
     let mut op_start_time: Option<Instant> = None;
 
-    // Demo mode uses the default settings
-    let protect_threads = true;
+    // Demo mode uses the default setting for advance_on_select
     let advance_on_select = true;
 
     // Main event loop
@@ -797,24 +781,24 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     app.enter_undo_history();
                 }
                 KeyCode::Char('a') => {
-                    if let Some(op) = handle_demo_archive(&app, &mut ui_state, protect_threads) {
+                    if let Some(op) = handle_demo_archive(&app, &mut ui_state) {
                         ui_state.set_busy(op.busy_message());
                         pending_op = Some(op);
                         op_start_time = Some(Instant::now());
                     }
                 }
                 KeyCode::Char('A') => {
-                    handle_demo_archive_all(&app, &mut ui_state, protect_threads);
+                    handle_demo_archive_all(&app, &mut ui_state);
                 }
                 KeyCode::Char('d') => {
-                    if let Some(op) = handle_demo_delete(&app, &mut ui_state, protect_threads) {
+                    if let Some(op) = handle_demo_delete(&app, &mut ui_state) {
                         ui_state.set_busy(op.busy_message());
                         pending_op = Some(op);
                         op_start_time = Some(Instant::now());
                     }
                 }
                 KeyCode::Char('D') => {
-                    handle_demo_delete_all(&app, &mut ui_state, protect_threads);
+                    handle_demo_delete_all(&app, &mut ui_state);
                 }
                 KeyCode::Char(' ') => {
                     if app.view == View::Thread {
@@ -854,38 +838,6 @@ fn execute_demo_op(
     op: DemoPendingOp,
 ) -> Option<DemoPendingOp> {
     match op {
-        DemoPendingOp::ArchiveSingle { email } => {
-            ui_state.clear_busy();
-            // Demo mode doesn't have real destination UIDs, so we use None
-            let undo_entry = UndoEntry {
-                action_type: UndoActionType::Archive,
-                context: UndoContext::SingleEmail {
-                    subject: email.subject.clone(),
-                },
-                emails: vec![(email.message_id.clone(), None, email.source_folder.clone())],
-                current_folder: "[Gmail]/All Mail".to_string(),
-            };
-            undo_storage.push(vec![email.clone()]);
-            app.push_undo(undo_entry);
-            app.remove_email(&email.id);
-            None
-        }
-        DemoPendingOp::DeleteSingle { email } => {
-            ui_state.clear_busy();
-            // Demo mode doesn't have real destination UIDs, so we use None
-            let undo_entry = UndoEntry {
-                action_type: UndoActionType::Delete,
-                context: UndoContext::SingleEmail {
-                    subject: email.subject.clone(),
-                },
-                emails: vec![(email.message_id.clone(), None, email.source_folder.clone())],
-                current_folder: "[Gmail]/Trash".to_string(),
-            };
-            undo_storage.push(vec![email.clone()]);
-            app.push_undo(undo_entry);
-            app.remove_email(&email.id);
-            None
-        }
         DemoPendingOp::ArchiveGroup { emails, sender } => {
             ui_state.clear_busy();
             // Demo mode doesn't have real destination UIDs, so we use None
@@ -903,7 +855,8 @@ fn execute_demo_op(
                 undo_storage.push(emails);
                 app.push_undo(undo_entry);
             }
-            app.remove_current_group_emails();
+            // Remove all emails from threads touched by this group
+            app.remove_current_group_threads();
             None
         }
         DemoPendingOp::DeleteGroup { emails, sender } => {
@@ -923,7 +876,8 @@ fn execute_demo_op(
                 undo_storage.push(emails);
                 app.push_undo(undo_entry);
             }
-            app.remove_current_group_emails();
+            // Remove all emails from threads touched by this group
+            app.remove_current_group_threads();
             None
         }
         DemoPendingOp::ArchiveThread {
@@ -1055,67 +1009,58 @@ fn execute_demo_op(
 }
 
 /// Handles 'a' key in demo mode - returns pending operation if action should proceed
-fn handle_demo_archive(
-    app: &App,
-    ui_state: &mut UiState,
-    protect_threads: bool,
-) -> Option<DemoPendingOp> {
+fn handle_demo_archive(app: &App, ui_state: &mut UiState) -> Option<DemoPendingOp> {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => None,
         View::EmailList => {
             // Check if there are selected emails - require confirmation
             if app.has_selection() {
-                let count = app.selected_email_ids().len();
+                let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
                 }
                 return None;
             }
 
-            // No selection - archive single email
-            // Protect threads: require navigating into thread if it has multiple emails
-            let thread_size = app.current_thread_emails().len();
-            if protect_threads && thread_size > 1 {
-                ui_state.set_status(format!(
-                    "{} This thread has {} emails. Press Enter to review the full thread before archiving.",
-                    WARNING_CHAR, thread_size
-                ));
-                return None;
+            // No selection - archive the entire thread
+            let thread_emails: Vec<Email> =
+                app.current_thread_emails().into_iter().cloned().collect();
+            let thread_id = app.current_email().map(|e| e.thread_id.clone());
+            let subject = app.current_email().map(|e| e.subject.clone());
+            if let (Some(tid), Some(subj)) = (thread_id, subject)
+                && !thread_emails.is_empty()
+            {
+                return Some(DemoPendingOp::ArchiveThread {
+                    thread_id: tid,
+                    thread_emails,
+                    subject: subj,
+                });
             }
-            app.current_email()
-                .cloned()
-                .map(|email| DemoPendingOp::ArchiveSingle { email })
+            None
         }
         View::Thread => None,
     }
 }
 
 /// Handles 'A' key in demo mode
-fn handle_demo_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
+fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {}
         View::EmailList => {
-            // If there are selected emails, archive only those
+            // If there are selected emails, archive those threads
             if app.has_selection() {
-                let count = app.selected_email_ids().len();
+                let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
                 }
                 return;
             }
 
-            // Protect threads: require reviewing each thread separately if filtered emails contain threads
-            if protect_threads && app.filtered_has_multi_message_threads() {
-                ui_state.set_status(format!(
-                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
-                    WARNING_CHAR
-                ));
-                return;
-            }
+            // Archive all threads touched by this group's emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
-                    count: app.filtered_email_count(),
+                    count: app.current_group_thread_email_ids().len(),
                 });
             }
         }
@@ -1131,67 +1076,58 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState, protect_threads: b
 }
 
 /// Handles 'd' key in demo mode - returns pending operation if action should proceed
-fn handle_demo_delete(
-    app: &App,
-    ui_state: &mut UiState,
-    protect_threads: bool,
-) -> Option<DemoPendingOp> {
+fn handle_demo_delete(app: &App, ui_state: &mut UiState) -> Option<DemoPendingOp> {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => None,
         View::EmailList => {
             // Check if there are selected emails - require confirmation
             if app.has_selection() {
-                let count = app.selected_email_ids().len();
+                let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
                 }
                 return None;
             }
 
-            // No selection - delete single email
-            // Protect threads: require navigating into thread if it has multiple emails
-            let thread_size = app.current_thread_emails().len();
-            if protect_threads && thread_size > 1 {
-                ui_state.set_status(format!(
-                    "{} This thread has {} emails. Press Enter to review the full thread before deleting.",
-                    WARNING_CHAR, thread_size
-                ));
-                return None;
+            // No selection - delete the entire thread
+            let thread_emails: Vec<Email> =
+                app.current_thread_emails().into_iter().cloned().collect();
+            let thread_id = app.current_email().map(|e| e.thread_id.clone());
+            let subject = app.current_email().map(|e| e.subject.clone());
+            if let (Some(tid), Some(subj)) = (thread_id, subject)
+                && !thread_emails.is_empty()
+            {
+                return Some(DemoPendingOp::DeleteThread {
+                    thread_id: tid,
+                    thread_emails,
+                    subject: subj,
+                });
             }
-            app.current_email()
-                .cloned()
-                .map(|email| DemoPendingOp::DeleteSingle { email })
+            None
         }
         View::Thread => None,
     }
 }
 
 /// Handles 'D' key in demo mode
-fn handle_demo_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
+fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {}
         View::EmailList => {
-            // If there are selected emails, delete only those
+            // If there are selected emails, delete those threads
             if app.has_selection() {
-                let count = app.selected_email_ids().len();
+                let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
                 }
                 return;
             }
 
-            // Protect threads: require reviewing each thread separately if filtered emails contain threads
-            if protect_threads && app.filtered_has_multi_message_threads() {
-                ui_state.set_status(format!(
-                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
-                    WARNING_CHAR
-                ));
-                return;
-            }
+            // Delete all threads touched by this group's emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
-                    count: app.filtered_email_count(),
+                    count: app.current_group_thread_email_ids().len(),
                 });
             }
         }
@@ -1221,7 +1157,8 @@ fn handle_demo_undo(app: &App, undo_storage: &mut DemoUndoStorage) -> Option<Dem
 fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<DemoPendingOp> {
     match action {
         ConfirmAction::ArchiveEmails { sender, .. } => {
-            let emails = app.filtered_emails_cloned();
+            // Get all emails from threads touched by this group
+            let emails = app.current_group_thread_emails_cloned();
             if emails.is_empty() {
                 None
             } else {
@@ -1229,7 +1166,8 @@ fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<Demo
             }
         }
         ConfirmAction::DeleteEmails { sender, .. } => {
-            let emails = app.filtered_emails_cloned();
+            // Get all emails from threads touched by this group
+            let emails = app.current_group_thread_emails_cloned();
             if emails.is_empty() {
                 None
             } else {
@@ -1261,7 +1199,8 @@ fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<Demo
             }
         }),
         ConfirmAction::ArchiveSelected { count } => {
-            let emails = app.selected_emails_cloned();
+            // Get all emails from threads touched by selected emails
+            let emails = app.selected_thread_emails_cloned();
             if !emails.is_empty() {
                 Some(DemoPendingOp::ArchiveSelected {
                     emails,
@@ -1273,7 +1212,8 @@ fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<Demo
             }
         }
         ConfirmAction::DeleteSelected { count } => {
-            let emails = app.selected_emails_cloned();
+            // Get all emails from threads touched by selected emails
+            let emails = app.selected_thread_emails_cloned();
             if !emails.is_empty() {
                 Some(DemoPendingOp::DeleteSelected {
                     emails,
@@ -1629,48 +1569,6 @@ fn spawn_imap_worker(
 
                     let _ = resp_tx.send(ImapResponse::Emails(result));
                 }
-                ImapCommand::ArchiveEmail(id, folder) => {
-                    debug_log!("ArchiveEmail: archiving uid {} from {}", id, folder);
-                    let start = Instant::now();
-                    let resp_tx_retry = resp_tx.clone();
-                    let result = retry_with_backoff(
-                        || client.archive_email(&id, &folder),
-                        |attempt| {
-                            let _ = resp_tx_retry.send(ImapResponse::Retrying {
-                                attempt,
-                                max_attempts: MAX_RETRIES,
-                                action: "archive".to_string(),
-                            });
-                        },
-                    );
-                    debug_log!(
-                        "ArchiveEmail: completed in {:.3}s ({})",
-                        start.elapsed().as_secs_f64(),
-                        if result.is_ok() { "success" } else { "failed" }
-                    );
-                    let _ = resp_tx.send(ImapResponse::ArchiveResult(result));
-                }
-                ImapCommand::DeleteEmail(id, folder) => {
-                    debug_log!("DeleteEmail: deleting uid {} from {}", id, folder);
-                    let start = Instant::now();
-                    let resp_tx_retry = resp_tx.clone();
-                    let result = retry_with_backoff(
-                        || client.delete_email(&id, &folder),
-                        |attempt| {
-                            let _ = resp_tx_retry.send(ImapResponse::Retrying {
-                                attempt,
-                                max_attempts: MAX_RETRIES,
-                                action: "delete".to_string(),
-                            });
-                        },
-                    );
-                    debug_log!(
-                        "DeleteEmail: completed in {:.3}s ({})",
-                        start.elapsed().as_secs_f64(),
-                        if result.is_ok() { "success" } else { "failed" }
-                    );
-                    let _ = resp_tx.send(ImapResponse::DeleteResult(result));
-                }
                 ImapCommand::ArchiveMultiple(ids_and_folders) => {
                     use std::collections::HashMap;
                     const BATCH_SIZE: usize = 250;
@@ -1912,7 +1810,6 @@ fn spawn_imap_worker(
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     account: (String, AccountConfig),
-    protect_threads: bool,
     parallel_connections: usize,
     advance_on_select: bool,
 ) -> Result<()> {
@@ -1999,56 +1896,6 @@ fn run_app(
                         ui_state.set_status(format!("Error: {}", e));
                     }
                 },
-                ImapResponse::ArchiveResult(result) => {
-                    debug_log!(
-                        "UI: archive result: {}",
-                        if result.is_ok() { "success" } else { "failed" }
-                    );
-                    if let Some(PendingOp::ArchiveSingle {
-                        email_id,
-                        message_id,
-                        source_folder,
-                        subject,
-                    }) = pending_operation.take()
-                        && let Ok(dest_uid) = result
-                    {
-                        // Create undo entry with destination UID
-                        let undo_entry = UndoEntry {
-                            action_type: UndoActionType::Archive,
-                            context: UndoContext::SingleEmail { subject },
-                            emails: vec![(message_id, dest_uid, source_folder)],
-                            current_folder: "[Gmail]/All Mail".to_string(),
-                        };
-                        app.push_undo(undo_entry);
-                        app.remove_email(&email_id);
-                    }
-                    ui_state.clear_busy();
-                }
-                ImapResponse::DeleteResult(result) => {
-                    debug_log!(
-                        "UI: delete result: {}",
-                        if result.is_ok() { "success" } else { "failed" }
-                    );
-                    if let Some(PendingOp::DeleteSingle {
-                        email_id,
-                        message_id,
-                        source_folder,
-                        subject,
-                    }) = pending_operation.take()
-                        && let Ok(dest_uid) = result
-                    {
-                        // Create undo entry with destination UID
-                        let undo_entry = UndoEntry {
-                            action_type: UndoActionType::Delete,
-                            context: UndoContext::SingleEmail { subject },
-                            emails: vec![(message_id, dest_uid, source_folder)],
-                            current_folder: "[Gmail]/Trash".to_string(),
-                        };
-                        app.push_undo(undo_entry);
-                        app.remove_email(&email_id);
-                    }
-                    ui_state.clear_busy();
-                }
                 ImapResponse::MultiArchiveResult(result) => {
                     debug_log!(
                         "UI: multi-archive result: {}",
@@ -2074,7 +1921,8 @@ fn run_app(
                                     current_folder: "[Gmail]/All Mail".to_string(),
                                 };
                                 app.push_undo(undo_entry);
-                                app.remove_current_group_emails();
+                                // Remove all emails from threads touched by this group
+                                app.remove_current_group_threads();
                             }
                             PendingOp::ArchiveThread {
                                 thread_id,
@@ -2119,7 +1967,8 @@ fn run_app(
                                     current_folder: "[Gmail]/All Mail".to_string(),
                                 };
                                 app.push_undo(undo_entry);
-                                app.remove_selected_emails();
+                                // Remove all emails from threads touched by selected emails
+                                app.remove_selected_threads();
                             }
                             _ => {}
                         }
@@ -2151,7 +2000,8 @@ fn run_app(
                                     current_folder: "[Gmail]/Trash".to_string(),
                                 };
                                 app.push_undo(undo_entry);
-                                app.remove_current_group_emails();
+                                // Remove all emails from threads touched by this group
+                                app.remove_current_group_threads();
                             }
                             PendingOp::DeleteThread {
                                 thread_id,
@@ -2196,7 +2046,8 @@ fn run_app(
                                     current_folder: "[Gmail]/Trash".to_string(),
                                 };
                                 app.push_undo(undo_entry);
-                                app.remove_selected_emails();
+                                // Remove all emails from threads touched by selected emails
+                                app.remove_selected_threads();
                             }
                             _ => {}
                         }
@@ -2666,28 +2517,16 @@ fn run_app(
                     app.enter_undo_history();
                 }
                 KeyCode::Char('a') => {
-                    handle_archive(
-                        &mut app,
-                        &cmd_tx,
-                        &mut ui_state,
-                        &mut pending_operation,
-                        protect_threads,
-                    )?;
+                    handle_archive(&mut app, &cmd_tx, &mut ui_state, &mut pending_operation)?;
                 }
                 KeyCode::Char('A') => {
-                    handle_archive_all(&app, &mut ui_state, protect_threads);
+                    handle_archive_all(&app, &mut ui_state);
                 }
                 KeyCode::Char('d') => {
-                    handle_delete(
-                        &mut app,
-                        &cmd_tx,
-                        &mut ui_state,
-                        &mut pending_operation,
-                        protect_threads,
-                    )?;
+                    handle_delete(&mut app, &cmd_tx, &mut ui_state, &mut pending_operation)?;
                 }
                 KeyCode::Char('D') => {
-                    handle_delete_all(&app, &mut ui_state, protect_threads);
+                    handle_delete_all(&app, &mut ui_state);
                 }
                 KeyCode::Char(' ') => {
                     if app.view == View::Thread {
@@ -2721,20 +2560,6 @@ fn run_app(
 /// Tracks pending operations so we know what to update when response arrives
 /// Also stores data needed to create undo entries when the result comes back
 enum PendingOp {
-    /// Archive single email: (email_id, message_id, source_folder, subject)
-    ArchiveSingle {
-        email_id: String,
-        message_id: Option<String>,
-        source_folder: String,
-        subject: String,
-    },
-    /// Delete single email: (email_id, message_id, source_folder, subject)
-    DeleteSingle {
-        email_id: String,
-        message_id: Option<String>,
-        source_folder: String,
-        subject: String,
-    },
     /// Archive group: (sender, Vec<(uid, message_id, source_folder)>)
     ArchiveGroup {
         sender: String,
@@ -2771,13 +2596,12 @@ enum PendingOp {
     Undo(usize),
 }
 
-/// Handles the 'a' key - archive single email or selected emails (not available in thread view)
+/// Handles the 'a' key - archive thread (not available in thread view)
 fn handle_archive(
     app: &mut App,
     cmd_tx: &mpsc::Sender<ImapCommand>,
     ui_state: &mut UiState,
     pending_operation: &mut Option<PendingOp>,
-    protect_threads: bool,
 ) -> Result<()> {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {
@@ -2786,37 +2610,29 @@ fn handle_archive(
         View::EmailList => {
             // Check if there are selected emails - require confirmation
             if app.has_selection() {
-                let count = app.selected_email_ids().len();
+                let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
                 }
                 return Ok(());
             }
 
-            // No selection - archive single email
-            // Allow if thread has only one email (nothing else to review)
-            let thread_size = app.current_thread_emails().len();
-            if protect_threads && thread_size > 1 {
-                ui_state.set_status(format!(
-                    "{} This thread has {} emails. Press Enter to review the full thread before archiving.",
-                    WARNING_CHAR, thread_size
-                ));
-                return Ok(());
-            }
-            // Archive single email (only this sender's email)
-            if let Some(email) = app.current_email().cloned() {
-                ui_state.set_busy("Archiving...");
-                // Store data needed for undo entry creation when result arrives
-                *pending_operation = Some(PendingOp::ArchiveSingle {
-                    email_id: email.id.clone(),
-                    message_id: email.message_id.clone(),
-                    source_folder: email.source_folder.clone(),
-                    subject: email.subject.clone(),
+            // No selection - archive the entire thread
+            let email_ids = app.current_thread_email_ids();
+            let emails_for_undo = app.current_thread_emails_for_undo();
+            let thread_id = app.current_email().map(|e| e.thread_id.clone());
+            let subject = app.current_email().map(|e| e.subject.clone());
+            if !email_ids.is_empty()
+                && let Some(tid) = thread_id
+                && let Some(subj) = subject
+            {
+                ui_state.set_busy(format!("Archiving thread ({} emails)...", email_ids.len()));
+                *pending_operation = Some(PendingOp::ArchiveThread {
+                    thread_id: tid,
+                    subject: subj,
+                    emails: emails_for_undo,
                 });
-                cmd_tx.send(ImapCommand::ArchiveEmail(
-                    email.id,
-                    email.source_folder.clone(),
-                ))?;
+                cmd_tx.send(ImapCommand::ArchiveMultiple(email_ids))?;
             }
         }
         View::Thread => {
@@ -2826,34 +2642,27 @@ fn handle_archive(
     Ok(())
 }
 
-/// Handles the 'A' key - archive all in group
-fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
+/// Handles the 'A' key - archive all threads in group
+fn handle_archive_all(app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {
             // No 'A' in group list view, undo history, or text view to prevent accidental bulk operations
         }
         View::EmailList => {
-            // If there are selected emails, archive only those
+            // If there are selected emails, archive those threads
             if app.has_selection() {
-                let count = app.selected_email_ids().len();
+                let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
                 }
                 return;
             }
 
-            // Protect threads: require reviewing each thread separately if filtered emails contain threads
-            if protect_threads && app.filtered_has_multi_message_threads() {
-                ui_state.set_status(format!(
-                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then archived separately.",
-                    WARNING_CHAR
-                ));
-                return;
-            }
+            // Archive all threads touched by this group's emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
-                    count: app.filtered_email_count(),
+                    count: app.current_group_thread_email_ids().len(),
                 });
             }
         }
@@ -2869,13 +2678,12 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState, protect_threads: bool) 
     }
 }
 
-/// Handles the 'd' key - delete single email or selected emails (not available in thread view)
+/// Handles the 'd' key - delete thread (not available in thread view)
 fn handle_delete(
     app: &mut App,
     cmd_tx: &mpsc::Sender<ImapCommand>,
     ui_state: &mut UiState,
     pending_operation: &mut Option<PendingOp>,
-    protect_threads: bool,
 ) -> Result<()> {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {
@@ -2884,37 +2692,29 @@ fn handle_delete(
         View::EmailList => {
             // Check if there are selected emails - require confirmation
             if app.has_selection() {
-                let count = app.selected_email_ids().len();
+                let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
                 }
                 return Ok(());
             }
 
-            // No selection - delete single email
-            // Allow if thread has only one email (nothing else to review)
-            let thread_size = app.current_thread_emails().len();
-            if protect_threads && thread_size > 1 {
-                ui_state.set_status(format!(
-                    "{} This thread has {} emails. Press Enter to review the full thread before deleting.",
-                    WARNING_CHAR, thread_size
-                ));
-                return Ok(());
-            }
-            // Delete single email (only this sender's email)
-            if let Some(email) = app.current_email().cloned() {
-                ui_state.set_busy("Deleting...");
-                // Store data needed for undo entry creation when result arrives
-                *pending_operation = Some(PendingOp::DeleteSingle {
-                    email_id: email.id.clone(),
-                    message_id: email.message_id.clone(),
-                    source_folder: email.source_folder.clone(),
-                    subject: email.subject.clone(),
+            // No selection - delete the entire thread
+            let email_ids = app.current_thread_email_ids();
+            let emails_for_undo = app.current_thread_emails_for_undo();
+            let thread_id = app.current_email().map(|e| e.thread_id.clone());
+            let subject = app.current_email().map(|e| e.subject.clone());
+            if !email_ids.is_empty()
+                && let Some(tid) = thread_id
+                && let Some(subj) = subject
+            {
+                ui_state.set_busy(format!("Deleting thread ({} emails)...", email_ids.len()));
+                *pending_operation = Some(PendingOp::DeleteThread {
+                    thread_id: tid,
+                    subject: subj,
+                    emails: emails_for_undo,
                 });
-                cmd_tx.send(ImapCommand::DeleteEmail(
-                    email.id,
-                    email.source_folder.clone(),
-                ))?;
+                cmd_tx.send(ImapCommand::DeleteMultiple(email_ids))?;
             }
         }
         View::Thread => {
@@ -2924,34 +2724,27 @@ fn handle_delete(
     Ok(())
 }
 
-/// Handles the 'D' key - delete all in group
-fn handle_delete_all(app: &App, ui_state: &mut UiState, protect_threads: bool) {
+/// Handles the 'D' key - delete all threads in group
+fn handle_delete_all(app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {
             // No 'D' in group list view, undo history, or text view to prevent accidental bulk operations
         }
         View::EmailList => {
-            // If there are selected emails, delete only those
+            // If there are selected emails, delete those threads
             if app.has_selection() {
-                let count = app.selected_email_ids().len();
+                let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
                 }
                 return;
             }
 
-            // Protect threads: require reviewing each thread separately if filtered emails contain threads
-            if protect_threads && app.filtered_has_multi_message_threads() {
-                ui_state.set_status(format!(
-                    "{} This list contains emails that are part of threads. Each thread must be reviewed and then deleted separately.",
-                    WARNING_CHAR
-                ));
-                return;
-            }
+            // Delete all threads touched by this group's emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
-                    count: app.filtered_email_count(),
+                    count: app.current_group_thread_email_ids().len(),
                 });
             }
         }
@@ -3012,9 +2805,9 @@ fn handle_confirmed_action(
     debug_log!("UI: confirmed action: {:?}", action);
     match action {
         ConfirmAction::ArchiveEmails { sender, .. } => {
-            // Archive only this sender's emails (not full threads)
-            let email_ids = app.current_group_email_ids();
-            let emails_for_undo = app.current_group_emails_for_undo();
+            // Archive all threads touched by this sender's emails
+            let email_ids = app.current_group_thread_email_ids();
+            let emails_for_undo = app.current_group_thread_emails_for_undo();
             if !email_ids.is_empty() {
                 ui_state.set_busy(format!("Archiving {} emails...", email_ids.len()));
                 // Store data for undo entry creation when result arrives
@@ -3026,9 +2819,9 @@ fn handle_confirmed_action(
             }
         }
         ConfirmAction::DeleteEmails { sender, .. } => {
-            // Delete only this sender's emails (not full threads)
-            let email_ids = app.current_group_email_ids();
-            let emails_for_undo = app.current_group_emails_for_undo();
+            // Delete all threads touched by this sender's emails
+            let email_ids = app.current_group_thread_email_ids();
+            let emails_for_undo = app.current_group_thread_emails_for_undo();
             if !email_ids.is_empty() {
                 ui_state.set_busy(format!("Deleting {} emails...", email_ids.len()));
                 // Store data for undo entry creation when result arrives
@@ -3080,8 +2873,9 @@ fn handle_confirmed_action(
             }
         }
         ConfirmAction::ArchiveSelected { count } => {
-            let email_ids = app.selected_email_ids();
-            let emails_for_undo = app.selected_emails_for_undo();
+            // Archive all threads touched by selected emails
+            let email_ids = app.selected_thread_email_ids();
+            let emails_for_undo = app.selected_thread_emails_for_undo();
             if !email_ids.is_empty() {
                 ui_state.set_busy(format!("Archiving {} emails...", email_ids.len()));
                 // Store data for undo entry creation when result arrives
@@ -3093,8 +2887,9 @@ fn handle_confirmed_action(
             }
         }
         ConfirmAction::DeleteSelected { count } => {
-            let email_ids = app.selected_email_ids();
-            let emails_for_undo = app.selected_emails_for_undo();
+            // Delete all threads touched by selected emails
+            let email_ids = app.selected_thread_email_ids();
+            let emails_for_undo = app.selected_thread_emails_for_undo();
             if !email_ids.is_empty() {
                 ui_state.set_busy(format!("Deleting {} emails...", email_ids.len()));
                 // Store data for undo entry creation when result arrives
