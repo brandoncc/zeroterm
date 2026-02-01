@@ -806,19 +806,11 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                             "Cannot select individual emails in thread view. Press Enter to open the thread."
                                 .to_string(),
                         );
-                    } else if app.view == View::EmailList {
-                        match app.toggle_email_selection() {
-                            app::SelectionResult::IsThread => {
-                                ui_state.set_status(
-                                    "Threads must be handled individually. Press Enter to view this thread."
-                                        .to_string(),
-                                );
-                            }
-                            app::SelectionResult::Toggled if advance_on_select => {
-                                app.select_next();
-                            }
-                            _ => {}
-                        }
+                    } else if app.view == View::EmailList
+                        && let app::SelectionResult::Toggled = app.toggle_email_selection()
+                        && advance_on_select
+                    {
+                        app.select_next();
                     }
                 }
                 _ => {}
@@ -2534,19 +2526,11 @@ fn run_app(
                             "Cannot select individual emails in thread view. Press Enter to open the thread."
                                 .to_string(),
                         );
-                    } else if app.view == View::EmailList {
-                        match app.toggle_email_selection() {
-                            app::SelectionResult::IsThread => {
-                                ui_state.set_status(
-                                    "Threads must be handled individually. Press Enter to view this thread."
-                                        .to_string(),
-                                );
-                            }
-                            app::SelectionResult::Toggled if advance_on_select => {
-                                app.select_next();
-                            }
-                            _ => {}
-                        }
+                    } else if app.view == View::EmailList
+                        && let app::SelectionResult::Toggled = app.toggle_email_selection()
+                        && advance_on_select
+                    {
+                        app.select_next();
                     }
                 }
                 _ => {}
