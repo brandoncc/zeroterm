@@ -1262,11 +1262,19 @@ impl App {
             .map(|e| e.thread_id.clone())
             .collect();
 
-        // Remove all emails from those threads
-        self.emails.retain(|e| !thread_ids.contains(&e.thread_id));
+        // Remove all emails from those threads, tracking which IDs are removed
+        let mut removed_ids: HashSet<String> = HashSet::new();
+        self.emails.retain(|e| {
+            if thread_ids.contains(&e.thread_id) {
+                removed_ids.insert(e.id.clone());
+                false
+            } else {
+                true
+            }
+        });
 
-        // Clear selection since the emails are gone
-        self.selected_emails.clear();
+        // Only clear selections for emails that were actually removed
+        self.selected_emails.retain(|id| !removed_ids.contains(id));
 
         self.regroup();
         self.selected_email = None;
@@ -2551,6 +2559,51 @@ mod tests {
         assert!(
             ids.contains(&"2"),
             "Should contain bob's email from same thread"
+        );
+    }
+
+    #[test]
+    fn test_remove_selected_threads_preserves_hidden_selections() {
+        // When filtering hides some selected emails, removing visible selections
+        // should preserve the hidden selections
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_b", "alice@example.com"),
+            create_test_email_with_thread("3", "thread_c", "alice@example.com"),
+        ]);
+
+        // Give the emails different subjects for filtering
+        app.emails[0].subject = "Important meeting".to_string();
+        app.emails[1].subject = "Urgent task".to_string();
+        app.emails[2].subject = "Important update".to_string();
+        app.regroup();
+
+        app.enter(); // Enter alice's group
+
+        // Select all three emails
+        app.selected_emails.insert("1".to_string());
+        app.selected_emails.insert("2".to_string());
+        app.selected_emails.insert("3".to_string());
+
+        // Apply filter that hides email 2 ("Urgent task")
+        app.set_text_filter(Some("Important".to_string()));
+
+        // Remove selected threads (should only remove 1 and 3)
+        app.remove_selected_threads();
+
+        // Email 2's selection should be preserved since it was hidden
+        assert!(
+            app.is_email_selected("2"),
+            "Hidden selection should be preserved"
+        );
+        assert!(
+            !app.is_email_selected("1"),
+            "Deleted email should not be selected"
+        );
+        assert!(
+            !app.is_email_selected("3"),
+            "Deleted email should not be selected"
         );
     }
 }
