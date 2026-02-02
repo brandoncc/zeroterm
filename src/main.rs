@@ -281,11 +281,13 @@ enum DemoPendingOp {
         emails: Vec<Email>,
         count: usize,
         processed: usize,
+        processed_ids: Vec<String>,
     },
     DeleteSelected {
         emails: Vec<Email>,
         count: usize,
         processed: usize,
+        processed_ids: Vec<String>,
     },
     Undo {
         index: usize,
@@ -894,20 +896,19 @@ fn execute_demo_op(
             mut emails,
             count,
             processed,
+            mut processed_ids,
         } => {
             // Process one email per cycle for progress display
             if let Some(email) = emails.first().cloned() {
                 app.remove_email(&email.id);
+                processed_ids.push(email.id.clone());
                 emails.remove(0);
                 let new_processed = processed + 1;
 
                 if emails.is_empty() {
-                    // All done - record undo entry and clear selection
+                    // All done - deselect only processed emails (preserve hidden selections)
                     ui_state.clear_busy();
-                    // Collect message IDs from all originally selected emails for undo
-                    // (we need to get them from the emails we stored, but they're removed now)
-                    // For simplicity, we record the undo at the start instead
-                    app.clear_selection();
+                    app.deselect_emails(&processed_ids);
                     None
                 } else {
                     // More to process - update progress and continue
@@ -916,11 +917,12 @@ fn execute_demo_op(
                         emails,
                         count,
                         processed: new_processed,
+                        processed_ids,
                     })
                 }
             } else {
                 ui_state.clear_busy();
-                app.clear_selection();
+                app.deselect_emails(&processed_ids);
                 None
             }
         }
@@ -928,17 +930,19 @@ fn execute_demo_op(
             mut emails,
             count,
             processed,
+            mut processed_ids,
         } => {
             // Process one email per cycle for progress display
             if let Some(email) = emails.first().cloned() {
                 app.remove_email(&email.id);
+                processed_ids.push(email.id.clone());
                 emails.remove(0);
                 let new_processed = processed + 1;
 
                 if emails.is_empty() {
-                    // All done - clear selection
+                    // All done - deselect only processed emails (preserve hidden selections)
                     ui_state.clear_busy();
-                    app.clear_selection();
+                    app.deselect_emails(&processed_ids);
                     None
                 } else {
                     // More to process - update progress and continue
@@ -947,11 +951,12 @@ fn execute_demo_op(
                         emails,
                         count,
                         processed: new_processed,
+                        processed_ids,
                     })
                 }
             } else {
                 ui_state.clear_busy();
-                app.clear_selection();
+                app.deselect_emails(&processed_ids);
                 None
             }
         }
@@ -1162,6 +1167,7 @@ fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<Demo
                     emails,
                     count,
                     processed: 0,
+                    processed_ids: Vec::new(),
                 })
             } else {
                 None
@@ -1175,6 +1181,7 @@ fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<Demo
                     emails,
                     count,
                     processed: 0,
+                    processed_ids: Vec::new(),
                 })
             } else {
                 None

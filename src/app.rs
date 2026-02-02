@@ -1227,6 +1227,13 @@ impl App {
         self.selected_emails.clear();
     }
 
+    /// Removes specific emails from selection (for filtered operations)
+    pub fn deselect_emails(&mut self, ids: &[String]) {
+        for id in ids {
+            self.selected_emails.remove(id);
+        }
+    }
+
     /// Returns whether a specific email is selected
     pub fn is_email_selected(&self, email_id: &str) -> bool {
         self.selected_emails.contains(email_id)
