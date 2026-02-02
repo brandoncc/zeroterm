@@ -146,23 +146,12 @@ pub struct UiState {
     pub undo_scroll_offset: usize,
     /// When true, the help menu is displayed
     pub show_help: bool,
-    /// When true, the user is typing a search query
-    pub search_mode: bool,
-    /// The current search query being typed
-    pub search_query: String,
-    /// Original selection before search started (for restore on no match)
-    pub search_original_selection: Option<SearchSelection>,
+    /// When true, the user is typing in the filter input bar
+    pub filter_input_mode: bool,
+    /// The current filter query being typed
+    pub filter_query: String,
     /// State of the text view (loading, loaded, error)
     pub text_view_state: TextViewState,
-}
-
-/// Stores the selection state before search started
-#[derive(Debug, Clone)]
-pub struct SearchSelection {
-    pub selected_group: usize,
-    pub selected_email: Option<usize>,
-    pub selected_thread_email: Option<usize>,
-    pub selected_undo: usize,
 }
 
 impl UiState {
@@ -249,47 +238,46 @@ impl UiState {
         self.show_help
     }
 
-    /// Enter search mode, storing the current selection for potential restore
-    pub fn enter_search_mode(&mut self, app: &App) {
-        self.search_mode = true;
-        self.search_query.clear();
-        self.search_original_selection = Some(SearchSelection {
-            selected_group: app.selected_group,
-            selected_email: app.selected_email,
-            selected_thread_email: app.selected_thread_email,
-            selected_undo: app.selected_undo,
-        });
+    /// Enter filter input mode (user is typing filter query)
+    pub fn enter_filter_input_mode(&mut self) {
+        self.filter_input_mode = true;
+        self.filter_query.clear();
     }
 
-    /// Exit search mode
-    pub fn exit_search_mode(&mut self) {
-        self.search_mode = false;
-        self.search_original_selection = None;
+    /// Enter filter input mode with existing query (for editing active filter)
+    pub fn enter_filter_input_mode_with_query(&mut self, query: &str) {
+        self.filter_input_mode = true;
+        self.filter_query = query.to_string();
     }
 
-    /// Returns true if in search mode
-    pub fn is_searching(&self) -> bool {
-        self.search_mode
+    /// Exit filter input mode
+    pub fn exit_filter_input_mode(&mut self) {
+        self.filter_input_mode = false;
     }
 
-    /// Append a character to the search query
-    pub fn append_search_char(&mut self, c: char) {
-        self.search_query.push(c);
+    /// Returns true if in filter input mode
+    pub fn is_filter_input_active(&self) -> bool {
+        self.filter_input_mode
     }
 
-    /// Remove the last character from the search query
-    pub fn backspace_search(&mut self) {
-        self.search_query.pop();
+    /// Append a character to the filter query
+    pub fn append_filter_char(&mut self, c: char) {
+        self.filter_query.push(c);
     }
 
-    /// Get the current search query
-    pub fn search_query(&self) -> &str {
-        &self.search_query
+    /// Remove the last character from the filter query
+    pub fn backspace_filter(&mut self) {
+        self.filter_query.pop();
     }
 
-    /// Get the original selection before search started
-    pub fn search_original_selection(&self) -> Option<&SearchSelection> {
-        self.search_original_selection.as_ref()
+    /// Get the current filter query
+    pub fn filter_query(&self) -> &str {
+        &self.filter_query
+    }
+
+    /// Clear the filter query
+    pub fn clear_filter_query(&mut self) {
+        self.filter_query.clear();
     }
 }
 
@@ -693,10 +681,17 @@ impl StatefulWidget for EmailListWidget<'_> {
     type State = TableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let filter_indicator = match self.app.thread_filter {
+        let thread_filter_indicator = match self.app.thread_filter {
             crate::app::ThreadFilter::All => "",
             crate::app::ThreadFilter::OnlyThreads => " [Threads]",
             crate::app::ThreadFilter::NoThreads => " [No Threads]",
+        };
+
+        // Build text filter indicator
+        let text_filter_indicator = if let Some(query) = self.app.text_filter() {
+            format!(" [filter: {}]", query)
+        } else {
+            String::new()
         };
 
         // Get the title - use current group if available, otherwise use viewing_group_key
@@ -705,17 +700,24 @@ impl StatefulWidget for EmailListWidget<'_> {
             let email_count = self.app.full_thread_email_count_for_group(g);
             if thread_count == email_count {
                 format!(
-                    " Threads from {}{} — {} threads ",
-                    g.key, filter_indicator, thread_count
+                    " Threads from {}{}{} — {} threads ",
+                    g.key, thread_filter_indicator, text_filter_indicator, thread_count
                 )
             } else {
                 format!(
-                    " Threads from {}{} — {} threads ({} emails) ",
-                    g.key, filter_indicator, thread_count, email_count
+                    " Threads from {}{}{} — {} threads ({} emails) ",
+                    g.key,
+                    thread_filter_indicator,
+                    text_filter_indicator,
+                    thread_count,
+                    email_count
                 )
             }
         } else if let Some(key) = self.app.viewing_group_key() {
-            format!(" Threads from {} — 0 threads ", key)
+            format!(
+                " Threads from {}{} — 0 threads ",
+                key, text_filter_indicator
+            )
         } else {
             " Threads ".to_string()
         };
@@ -725,7 +727,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Use filtered threads (respects filter_to_threads setting)
+        // Use filtered threads (respects both thread_filter and text_filter)
         let filtered_threads = self.app.filtered_threads_in_current_group();
 
         // Show message if group is empty (all emails deleted/archived)
@@ -742,7 +744,21 @@ impl StatefulWidget for EmailListWidget<'_> {
             return;
         }
 
-        // Show message if filter is active but no threads match
+        // Show message if text filter is active but no threads match
+        if filtered_threads.is_empty() && self.app.has_text_filter() {
+            let msg = "No emails match filter (Esc: clear)";
+            let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
+            let y = inner.y + inner.height / 2;
+            buf.set_line(
+                x,
+                y,
+                &Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray))),
+                inner.width,
+            );
+            return;
+        }
+
+        // Show message if thread filter is active but no threads match
         if filtered_threads.is_empty() && self.app.thread_filter != crate::app::ThreadFilter::All {
             let msg = match self.app.thread_filter {
                 crate::app::ThreadFilter::OnlyThreads => {
@@ -1101,20 +1117,20 @@ impl Widget for UndoHistoryWidget<'_> {
     }
 }
 
-/// Widget for the search bar at the bottom
-pub struct SearchBarWidget<'a> {
+/// Widget for the filter bar at the bottom (when typing filter query)
+pub struct FilterBarWidget<'a> {
     query: &'a str,
 }
 
-impl<'a> SearchBarWidget<'a> {
+impl<'a> FilterBarWidget<'a> {
     pub fn new(query: &'a str) -> Self {
         Self { query }
     }
 }
 
-impl Widget for SearchBarWidget<'_> {
+impl Widget for FilterBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let text = format!("/{}", self.query);
+        let text = format!("filter: {}", self.query);
         let paragraph = Paragraph::new(text).style(Style::default().fg(Color::Yellow));
         paragraph.render(area, buf);
     }
@@ -1138,20 +1154,22 @@ impl Widget for HelpBarWidget<'_> {
                 if self.app.groups.is_empty() {
                     "r: refresh  q: quit  ?: more"
                 } else {
-                    "j/k: navigate  /: search  Enter: open  q: quit  ?: more"
+                    "j/k: navigate  Enter: open  q: quit  ?: more"
                 }
             }
             View::EmailList => {
-                if self.app.has_selection() {
-                    "j/k: navigate  /: search  a/d: archive/delete selected  q: back  ?: more"
+                if self.app.has_text_filter() {
+                    "j/k: navigate  /: edit filter  Esc: clear filter  a/d: archive/delete  ?: more"
+                } else if self.app.has_selection() {
+                    "j/k: navigate  /: filter  a/d: archive/delete selected  q: back  ?: more"
                 } else {
-                    "j/k: navigate  /: search  a/d: archive/delete  q: back  ?: more"
+                    "j/k: navigate  /: filter  a/d: archive/delete  q: back  ?: more"
                 }
             }
             View::Thread => {
                 "j/k: navigate  Enter: view body  e: browser  A/D: archive/delete  q: back  ?: more"
             }
-            View::UndoHistory => "j/k: navigate  /: search  Enter: undo  q: back  ?: more",
+            View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
             View::EmailBody => "j/k: scroll  e: browser  Esc: back  q: quit  ?: more",
         };
 
@@ -1181,9 +1199,20 @@ impl HelpMenuWidget {
                 ("G", "Go to bottom"),
                 ("Ctrl+d", "Half page down"),
                 ("Ctrl+u", "Half page up"),
-                ("/", "Search"),
-                ("n", "Next match"),
-                ("N", "Previous match"),
+            ],
+        );
+
+        let nav_with_filter = (
+            "Navigation",
+            vec![
+                ("j / ↓", "Move down"),
+                ("k / ↑", "Move up"),
+                ("g g", "Go to top"),
+                ("G", "Go to bottom"),
+                ("Ctrl+d", "Half page down"),
+                ("Ctrl+u", "Half page up"),
+                ("/", "Filter emails"),
+                ("Esc", "Clear filter"),
             ],
         );
 
@@ -1203,7 +1232,7 @@ impl HelpMenuWidget {
                 ("General", vec![("q", "Quit"), ("?", "Toggle this help")]),
             ],
             View::EmailList => vec![
-                nav,
+                nav_with_filter,
                 (
                     "Actions",
                     vec![
@@ -1212,6 +1241,7 @@ impl HelpMenuWidget {
                         ("A", "Archive all in group"),
                         ("d", "Delete email"),
                         ("D", "Delete all in group"),
+                        ("Space", "Select/deselect"),
                         ("t", "Toggle threads only"),
                         ("u", "Undo history"),
                     ],
