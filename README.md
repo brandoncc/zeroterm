@@ -44,20 +44,18 @@ This design ensures you always know exactly what emails will be affected before 
 | `G` | Go to bottom |
 | `Ctrl+d` | Half page down |
 | `Ctrl+u` | Half page up |
-| `/` | Search (incremental, like vim) |
-| `n` | Next search match |
-| `N` | Previous search match |
 | `m` | Toggle grouping mode (email/domain) |
 | `r` | Refresh emails |
 | `q` | Quit |
 | `Escape` | Go back to previous view |
 
-### Search Mode
+### Filter Mode (Email List View)
 | Key | Action |
 |-----|--------|
-| Type | Incrementally search and jump to first match |
-| `Enter` | Confirm selection and exit search |
-| `Escape` | Cancel and restore original selection |
+| `/` | Enter filter mode |
+| Type | Filter emails by subject or sender (hides non-matches) |
+| `Enter` | Exit filter input, keep filter active |
+| `Escape` | Clear filter and show all emails |
 | `Backspace` | Delete last character |
 
 ### Group List View
@@ -71,10 +69,12 @@ This design ensures you always know exactly what emails will be affected before 
 | Key | Action |
 |-----|--------|
 | `Enter` | View full thread |
-| `a` | Archive selected email |
-| `A` | Archive all emails from sender |
-| `d` | Delete selected email |
-| `D` | Delete all emails from sender |
+| `Space` | Toggle selection |
+| `/` | Filter emails (hides non-matches) |
+| `a` | Archive current email |
+| `A` | Archive selected/all emails from sender |
+| `d` | Delete current email |
+| `D` | Delete selected/all emails from sender |
 
 ### Thread View
 | Key | Action |
