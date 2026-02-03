@@ -93,10 +93,8 @@ OPTIONS:
 NAVIGATION:
     j/k              Move down/up in lists
     Enter            Select group or email / view email body
-    Escape           Go back to previous view
-    Tab              Toggle between email and domain grouping
-    /                Search emails
-    n/N              Next/previous search result
+    Escape           Go back to previous view / clear filter
+    /                Filter emails (in email list view)
     q                Quit
 
 ACTIONS:
@@ -283,11 +281,13 @@ enum DemoPendingOp {
         emails: Vec<Email>,
         count: usize,
         processed: usize,
+        processed_ids: Vec<String>,
     },
     DeleteSelected {
         emails: Vec<Email>,
         count: usize,
         processed: usize,
+        processed_ids: Vec<String>,
     },
     Undo {
         index: usize,
@@ -487,66 +487,34 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
-            // Handle search mode input
-            if ui_state.is_searching() {
+            // Handle filter input mode (only in EmailList view)
+            if ui_state.is_filter_input_active() {
                 match key.code {
                     KeyCode::Esc => {
-                        // Restore original selection and exit
-                        if let Some(orig) = ui_state.search_original_selection() {
-                            app.restore_selection(
-                                orig.selected_group,
-                                orig.selected_email,
-                                orig.selected_thread_email,
-                                orig.selected_undo,
-                            );
-                        }
-                        ui_state.exit_search_mode();
+                        // Clear filter entirely and exit input mode
+                        app.clear_text_filter();
+                        ui_state.clear_filter_query();
+                        ui_state.exit_filter_input_mode();
                     }
                     KeyCode::Enter => {
-                        // Just exit search mode, keep current selection
-                        ui_state.exit_search_mode();
+                        // Exit input mode, keep filter active
+                        ui_state.exit_filter_input_mode();
                     }
                     KeyCode::Backspace => {
-                        ui_state.backspace_search();
-                        // Re-search with updated query
-                        let query = ui_state.search_query().to_string();
+                        ui_state.backspace_filter();
+                        // Update filter in real-time
+                        let query = ui_state.filter_query().to_string();
                         if query.is_empty() {
-                            // Restore original selection when query becomes empty
-                            if let Some(orig) = ui_state.search_original_selection() {
-                                app.restore_selection(
-                                    orig.selected_group,
-                                    orig.selected_email,
-                                    orig.selected_thread_email,
-                                    orig.selected_undo,
-                                );
-                            }
-                        } else if !app.search_first(&query) {
-                            // No match, restore original selection
-                            if let Some(orig) = ui_state.search_original_selection() {
-                                app.restore_selection(
-                                    orig.selected_group,
-                                    orig.selected_email,
-                                    orig.selected_thread_email,
-                                    orig.selected_undo,
-                                );
-                            }
+                            app.clear_text_filter();
+                        } else {
+                            app.set_text_filter(Some(query));
                         }
                     }
                     KeyCode::Char(c) => {
-                        ui_state.append_search_char(c);
-                        // Incremental search - find first match
-                        let query = ui_state.search_query().to_string();
-                        if !app.search_first(&query) {
-                            // No match, restore original selection
-                            if let Some(orig) = ui_state.search_original_selection() {
-                                app.restore_selection(
-                                    orig.selected_group,
-                                    orig.selected_email,
-                                    orig.selected_thread_email,
-                                    orig.selected_undo,
-                                );
-                            }
-                        }
+                        ui_state.append_filter_char(c);
+                        // Update filter in real-time
+                        let query = ui_state.filter_query().to_string();
+                        app.set_text_filter(Some(query));
                     }
                     _ => {}
                 }
@@ -559,21 +527,15 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
-            // Enter search mode with /
-            if key.code == KeyCode::Char('/') {
-                ui_state.enter_search_mode(&app);
-                continue;
-            }
-
-            // Search next/previous with n/N
-            if key.code == KeyCode::Char('n') && !ui_state.search_query().is_empty() {
-                let query = ui_state.search_query().to_string();
-                app.search_next(&query);
-                continue;
-            }
-            if key.code == KeyCode::Char('N') && !ui_state.search_query().is_empty() {
-                let query = ui_state.search_query().to_string();
-                app.search_previous(&query);
+            // Enter filter mode with / (only in EmailList view)
+            if key.code == KeyCode::Char('/') && app.view == View::EmailList {
+                if app.has_text_filter() {
+                    // Re-enter input mode with existing query
+                    ui_state.enter_filter_input_mode_with_query(app.text_filter().unwrap_or(""));
+                } else {
+                    // Enter fresh filter input mode
+                    ui_state.enter_filter_input_mode();
+                }
                 continue;
             }
 
@@ -683,7 +645,11 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     ui_state.set_confirm(ConfirmAction::Quit);
                 }
                 KeyCode::Esc => {
-                    if app.view != View::GroupList {
+                    // In EmailList view with active filter, clear filter instead of exiting
+                    if app.view == View::EmailList && app.has_text_filter() {
+                        app.clear_text_filter();
+                        ui_state.clear_filter_query();
+                    } else if app.view != View::GroupList {
                         app.exit();
                     }
                 }
@@ -930,20 +896,19 @@ fn execute_demo_op(
             mut emails,
             count,
             processed,
+            mut processed_ids,
         } => {
             // Process one email per cycle for progress display
             if let Some(email) = emails.first().cloned() {
                 app.remove_email(&email.id);
+                processed_ids.push(email.id.clone());
                 emails.remove(0);
                 let new_processed = processed + 1;
 
                 if emails.is_empty() {
-                    // All done - record undo entry and clear selection
+                    // All done - deselect only processed emails (preserve hidden selections)
                     ui_state.clear_busy();
-                    // Collect message IDs from all originally selected emails for undo
-                    // (we need to get them from the emails we stored, but they're removed now)
-                    // For simplicity, we record the undo at the start instead
-                    app.clear_selection();
+                    app.deselect_emails(&processed_ids);
                     None
                 } else {
                     // More to process - update progress and continue
@@ -952,11 +917,12 @@ fn execute_demo_op(
                         emails,
                         count,
                         processed: new_processed,
+                        processed_ids,
                     })
                 }
             } else {
                 ui_state.clear_busy();
-                app.clear_selection();
+                app.deselect_emails(&processed_ids);
                 None
             }
         }
@@ -964,17 +930,19 @@ fn execute_demo_op(
             mut emails,
             count,
             processed,
+            mut processed_ids,
         } => {
             // Process one email per cycle for progress display
             if let Some(email) = emails.first().cloned() {
                 app.remove_email(&email.id);
+                processed_ids.push(email.id.clone());
                 emails.remove(0);
                 let new_processed = processed + 1;
 
                 if emails.is_empty() {
-                    // All done - clear selection
+                    // All done - deselect only processed emails (preserve hidden selections)
                     ui_state.clear_busy();
-                    app.clear_selection();
+                    app.deselect_emails(&processed_ids);
                     None
                 } else {
                     // More to process - update progress and continue
@@ -983,11 +951,12 @@ fn execute_demo_op(
                         emails,
                         count,
                         processed: new_processed,
+                        processed_ids,
                     })
                 }
             } else {
                 ui_state.clear_busy();
-                app.clear_selection();
+                app.deselect_emails(&processed_ids);
                 None
             }
         }
@@ -1198,6 +1167,7 @@ fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<Demo
                     emails,
                     count,
                     processed: 0,
+                    processed_ids: Vec::new(),
                 })
             } else {
                 None
@@ -1211,6 +1181,7 @@ fn handle_demo_confirmed_action(app: &App, action: ConfirmAction) -> Option<Demo
                     emails,
                     count,
                     processed: 0,
+                    processed_ids: Vec::new(),
                 })
             } else {
                 None
@@ -2162,66 +2133,34 @@ fn run_app(
                 continue;
             }
 
-            // Handle search mode input
-            if ui_state.is_searching() {
+            // Handle filter input mode (only in EmailList view)
+            if ui_state.is_filter_input_active() {
                 match key.code {
                     KeyCode::Esc => {
-                        // Restore original selection and exit
-                        if let Some(orig) = ui_state.search_original_selection() {
-                            app.restore_selection(
-                                orig.selected_group,
-                                orig.selected_email,
-                                orig.selected_thread_email,
-                                orig.selected_undo,
-                            );
-                        }
-                        ui_state.exit_search_mode();
+                        // Clear filter entirely and exit input mode
+                        app.clear_text_filter();
+                        ui_state.clear_filter_query();
+                        ui_state.exit_filter_input_mode();
                     }
                     KeyCode::Enter => {
-                        // Just exit search mode, keep current selection
-                        ui_state.exit_search_mode();
+                        // Exit input mode, keep filter active
+                        ui_state.exit_filter_input_mode();
                     }
                     KeyCode::Backspace => {
-                        ui_state.backspace_search();
-                        // Re-search with updated query
-                        let query = ui_state.search_query().to_string();
+                        ui_state.backspace_filter();
+                        // Update filter in real-time
+                        let query = ui_state.filter_query().to_string();
                         if query.is_empty() {
-                            // Restore original selection when query becomes empty
-                            if let Some(orig) = ui_state.search_original_selection() {
-                                app.restore_selection(
-                                    orig.selected_group,
-                                    orig.selected_email,
-                                    orig.selected_thread_email,
-                                    orig.selected_undo,
-                                );
-                            }
-                        } else if !app.search_first(&query) {
-                            // No match, restore original selection
-                            if let Some(orig) = ui_state.search_original_selection() {
-                                app.restore_selection(
-                                    orig.selected_group,
-                                    orig.selected_email,
-                                    orig.selected_thread_email,
-                                    orig.selected_undo,
-                                );
-                            }
+                            app.clear_text_filter();
+                        } else {
+                            app.set_text_filter(Some(query));
                         }
                     }
                     KeyCode::Char(c) => {
-                        ui_state.append_search_char(c);
-                        // Incremental search - find first match
-                        let query = ui_state.search_query().to_string();
-                        if !app.search_first(&query) {
-                            // No match, restore original selection
-                            if let Some(orig) = ui_state.search_original_selection() {
-                                app.restore_selection(
-                                    orig.selected_group,
-                                    orig.selected_email,
-                                    orig.selected_thread_email,
-                                    orig.selected_undo,
-                                );
-                            }
-                        }
+                        ui_state.append_filter_char(c);
+                        // Update filter in real-time
+                        let query = ui_state.filter_query().to_string();
+                        app.set_text_filter(Some(query));
                     }
                     _ => {}
                 }
@@ -2234,21 +2173,15 @@ fn run_app(
                 continue;
             }
 
-            // Enter search mode with /
-            if key.code == KeyCode::Char('/') {
-                ui_state.enter_search_mode(&app);
-                continue;
-            }
-
-            // Search next/previous with n/N
-            if key.code == KeyCode::Char('n') && !ui_state.search_query().is_empty() {
-                let query = ui_state.search_query().to_string();
-                app.search_next(&query);
-                continue;
-            }
-            if key.code == KeyCode::Char('N') && !ui_state.search_query().is_empty() {
-                let query = ui_state.search_query().to_string();
-                app.search_previous(&query);
+            // Enter filter mode with / (only in EmailList view)
+            if key.code == KeyCode::Char('/') && app.view == View::EmailList {
+                if app.has_text_filter() {
+                    // Re-enter input mode with existing query
+                    ui_state.enter_filter_input_mode_with_query(app.text_filter().unwrap_or(""));
+                } else {
+                    // Enter fresh filter input mode
+                    ui_state.enter_filter_input_mode();
+                }
                 continue;
             }
 
@@ -2385,7 +2318,11 @@ fn run_app(
                     ui_state.set_confirm(ConfirmAction::Quit);
                 }
                 KeyCode::Esc => {
-                    if app.view != View::GroupList {
+                    // In EmailList view with active filter, clear filter instead of exiting
+                    if app.view == View::EmailList && app.has_text_filter() {
+                        app.clear_text_filter();
+                        ui_state.clear_filter_query();
+                    } else if app.view != View::GroupList {
                         app.exit();
                     }
                 }

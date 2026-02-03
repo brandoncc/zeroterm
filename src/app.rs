@@ -144,6 +144,8 @@ pub struct App {
     pub text_view_scroll: usize,
     /// ID of the email being viewed in text view (for body caching)
     viewing_email_id: Option<String>,
+    /// Active text filter query (None = no filter active)
+    text_filter: Option<String>,
 }
 
 impl Default for App {
@@ -174,6 +176,7 @@ impl App {
             selected_emails: HashSet::new(),
             text_view_scroll: 0,
             viewing_email_id: None,
+            text_filter: None,
         }
     }
 
@@ -649,6 +652,7 @@ impl App {
         self.selected_email = None;
         self.viewing_group_key = None;
         self.clear_selection();
+        self.clear_text_filter();
     }
 
     /// Enters the thread view for the currently selected email
@@ -824,12 +828,52 @@ impl App {
         }
     }
 
-    /// Returns threads in the current group, filtered based on thread_filter setting
+    /// Sets the text filter query. Non-matching emails will be hidden.
+    pub fn set_text_filter(&mut self, query: Option<String>) {
+        self.text_filter = query;
+        // Adjust selection if current email becomes hidden
+        if let Some(idx) = self.selected_email {
+            let filtered = self.filtered_threads_in_current_group();
+            if idx >= filtered.len() {
+                self.selected_email = if filtered.is_empty() { None } else { Some(0) };
+            }
+        }
+    }
+
+    /// Clears the text filter (shows all emails)
+    pub fn clear_text_filter(&mut self) {
+        self.text_filter = None;
+    }
+
+    /// Returns whether a text filter is currently active
+    pub fn has_text_filter(&self) -> bool {
+        self.text_filter.is_some()
+    }
+
+    /// Returns the current text filter query, if any
+    pub fn text_filter(&self) -> Option<&str> {
+        self.text_filter.as_deref()
+    }
+
+    /// Checks if an email matches the text filter (case-insensitive)
+    fn email_matches_text_filter(&self, email: &Email) -> bool {
+        let Some(ref query) = self.text_filter else {
+            return true;
+        };
+        let query_lower = query.to_lowercase();
+        email.subject.to_lowercase().contains(&query_lower)
+            || email.from.to_lowercase().contains(&query_lower)
+            || email.from_email.to_lowercase().contains(&query_lower)
+    }
+
+    /// Returns threads in the current group, filtered based on thread_filter and text_filter settings
     pub fn filtered_threads_in_current_group(&self) -> Vec<&Email> {
         let Some(group) = self.current_group() else {
             return Vec::new();
         };
-        match self.thread_filter {
+
+        // First apply thread filter
+        let thread_filtered: Vec<&Email> = match self.thread_filter {
             ThreadFilter::All => group.threads(),
             ThreadFilter::OnlyThreads => group
                 .threads()
@@ -841,6 +885,16 @@ impl App {
                 .into_iter()
                 .filter(|e| !self.multi_message_threads.contains(&e.thread_id))
                 .collect(),
+        };
+
+        // Then apply text filter if active
+        if self.text_filter.is_some() {
+            thread_filtered
+                .into_iter()
+                .filter(|e| self.email_matches_text_filter(e))
+                .collect()
+        } else {
+            thread_filtered
         }
     }
 
@@ -864,11 +918,14 @@ impl App {
     /// Returns all emails in the current group that match the current filter.
     /// Unlike filtered_threads_in_current_group which returns one email per thread,
     /// this returns ALL emails that match (for bulk operations).
+    /// Applies both thread_filter and text_filter.
     pub fn filtered_emails_in_current_group(&self) -> Vec<&Email> {
         let Some(group) = self.current_group() else {
             return Vec::new();
         };
-        match self.thread_filter {
+
+        // First apply thread filter
+        let thread_filtered: Vec<&Email> = match self.thread_filter {
             ThreadFilter::All => group.emails.iter().collect(),
             ThreadFilter::OnlyThreads => group
                 .emails
@@ -880,6 +937,16 @@ impl App {
                 .iter()
                 .filter(|e| !self.multi_message_threads.contains(&e.thread_id))
                 .collect(),
+        };
+
+        // Then apply text filter if active
+        if self.text_filter.is_some() {
+            thread_filtered
+                .into_iter()
+                .filter(|e| self.email_matches_text_filter(e))
+                .collect()
+        } else {
+            thread_filtered
         }
     }
 
@@ -1160,6 +1227,13 @@ impl App {
         self.selected_emails.clear();
     }
 
+    /// Removes specific emails from selection (for filtered operations)
+    pub fn deselect_emails(&mut self, ids: &[String]) {
+        for id in ids {
+            self.selected_emails.remove(id);
+        }
+    }
+
     /// Returns whether a specific email is selected
     pub fn is_email_selected(&self, email_id: &str) -> bool {
         self.selected_emails.contains(email_id)
@@ -1184,300 +1258,6 @@ impl App {
             .collect()
     }
 
-    /// Restore selection state (used for search restore on no match)
-    pub fn restore_selection(
-        &mut self,
-        selected_group: usize,
-        selected_email: Option<usize>,
-        selected_thread_email: Option<usize>,
-        selected_undo: usize,
-    ) {
-        self.selected_group = selected_group;
-        self.selected_email = selected_email;
-        self.selected_thread_email = selected_thread_email;
-        self.selected_undo = selected_undo;
-    }
-
-    /// Search for the first item matching the query in the current view (for incremental search).
-    /// Searches from the beginning of the list.
-    /// Returns true if a match was found and selection was updated.
-    pub fn search_first(&mut self, query: &str) -> bool {
-        if query.is_empty() {
-            return false;
-        }
-        let query_lower = query.to_lowercase();
-
-        match self.view {
-            View::GroupList => self.search_first_group(&query_lower),
-            View::EmailList => self.search_first_email(&query_lower),
-            View::Thread => self.search_first_thread_email(&query_lower),
-            View::UndoHistory => self.search_first_undo(&query_lower),
-            View::EmailBody => false, // Search not supported in text view
-        }
-    }
-
-    /// Search for the next item matching the query in the current view.
-    /// Returns true if a match was found and selection was updated.
-    pub fn search_next(&mut self, query: &str) -> bool {
-        if query.is_empty() {
-            return false;
-        }
-        let query_lower = query.to_lowercase();
-
-        match self.view {
-            View::GroupList => self.search_next_group(&query_lower),
-            View::EmailList => self.search_next_email(&query_lower),
-            View::Thread => self.search_next_thread_email(&query_lower),
-            View::UndoHistory => self.search_next_undo(&query_lower),
-            View::EmailBody => false, // Search not supported in text view
-        }
-    }
-
-    /// Search for the previous item matching the query in the current view.
-    /// Returns true if a match was found and selection was updated.
-    pub fn search_previous(&mut self, query: &str) -> bool {
-        if query.is_empty() {
-            return false;
-        }
-        let query_lower = query.to_lowercase();
-
-        match self.view {
-            View::GroupList => self.search_previous_group(&query_lower),
-            View::EmailList => self.search_previous_email(&query_lower),
-            View::Thread => self.search_previous_thread_email(&query_lower),
-            View::UndoHistory => self.search_previous_undo(&query_lower),
-            View::EmailBody => false, // Search not supported in text view
-        }
-    }
-
-    /// Search for the first group matching the query (for incremental search)
-    fn search_first_group(&mut self, query: &str) -> bool {
-        let filtered = self.filtered_groups();
-        for group in &filtered {
-            if group.key.to_lowercase().contains(query)
-                && let Some(pos) = self.groups.iter().position(|g| g.key == group.key)
-            {
-                self.selected_group = pos;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the next group matching the query (searches by key)
-    fn search_next_group(&mut self, query: &str) -> bool {
-        let filtered = self.filtered_groups();
-        if filtered.is_empty() {
-            return false;
-        }
-
-        // Find current position in filtered list
-        let current_key = self.groups.get(self.selected_group).map(|g| &g.key);
-        let current_idx = current_key
-            .and_then(|k| filtered.iter().position(|g| &g.key == k))
-            .unwrap_or(0);
-
-        // Search from current+1 to end, then wrap to start
-        for i in 1..=filtered.len() {
-            let idx = (current_idx + i) % filtered.len();
-            if filtered[idx].key.to_lowercase().contains(query)
-                && let Some(pos) = self.groups.iter().position(|g| g.key == filtered[idx].key)
-            {
-                self.selected_group = pos;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the previous group matching the query
-    fn search_previous_group(&mut self, query: &str) -> bool {
-        let filtered = self.filtered_groups();
-        if filtered.is_empty() {
-            return false;
-        }
-
-        let current_key = self.groups.get(self.selected_group).map(|g| &g.key);
-        let current_idx = current_key
-            .and_then(|k| filtered.iter().position(|g| &g.key == k))
-            .unwrap_or(0);
-
-        // Search from current-1 backwards, then wrap
-        for i in 1..=filtered.len() {
-            let idx = (current_idx + filtered.len() - i) % filtered.len();
-            if filtered[idx].key.to_lowercase().contains(query)
-                && let Some(pos) = self.groups.iter().position(|g| g.key == filtered[idx].key)
-            {
-                self.selected_group = pos;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the first email matching the query (for incremental search)
-    fn search_first_email(&mut self, query: &str) -> bool {
-        let filtered = self.filtered_threads_in_current_group();
-        for (idx, email) in filtered.iter().enumerate() {
-            if email.subject.to_lowercase().contains(query) {
-                self.selected_email = Some(idx);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the next email matching the query (searches by subject)
-    fn search_next_email(&mut self, query: &str) -> bool {
-        let filtered = self.filtered_threads_in_current_group();
-        if filtered.is_empty() {
-            return false;
-        }
-
-        let current_idx = self.selected_email.unwrap_or(0);
-
-        for i in 1..=filtered.len() {
-            let idx = (current_idx + i) % filtered.len();
-            if filtered[idx].subject.to_lowercase().contains(query) {
-                self.selected_email = Some(idx);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the previous email matching the query
-    fn search_previous_email(&mut self, query: &str) -> bool {
-        let filtered = self.filtered_threads_in_current_group();
-        if filtered.is_empty() {
-            return false;
-        }
-
-        let current_idx = self.selected_email.unwrap_or(0);
-
-        for i in 1..=filtered.len() {
-            let idx = (current_idx + filtered.len() - i) % filtered.len();
-            if filtered[idx].subject.to_lowercase().contains(query) {
-                self.selected_email = Some(idx);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the first thread email matching the query (for incremental search)
-    fn search_first_thread_email(&mut self, query: &str) -> bool {
-        let thread_emails = self.current_thread_emails();
-        for (idx, email) in thread_emails.iter().enumerate() {
-            if email.subject.to_lowercase().contains(query)
-                || email.from_email.to_lowercase().contains(query)
-            {
-                self.selected_thread_email = Some(idx);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the next thread email matching the query (searches by subject and sender)
-    fn search_next_thread_email(&mut self, query: &str) -> bool {
-        let thread_emails = self.current_thread_emails();
-        if thread_emails.is_empty() {
-            return false;
-        }
-
-        let current_idx = self.selected_thread_email.unwrap_or(0);
-
-        for i in 1..=thread_emails.len() {
-            let idx = (current_idx + i) % thread_emails.len();
-            let email = thread_emails[idx];
-            if email.subject.to_lowercase().contains(query)
-                || email.from_email.to_lowercase().contains(query)
-            {
-                self.selected_thread_email = Some(idx);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the previous thread email matching the query
-    fn search_previous_thread_email(&mut self, query: &str) -> bool {
-        let thread_emails = self.current_thread_emails();
-        if thread_emails.is_empty() {
-            return false;
-        }
-
-        let current_idx = self.selected_thread_email.unwrap_or(0);
-
-        for i in 1..=thread_emails.len() {
-            let idx = (current_idx + thread_emails.len() - i) % thread_emails.len();
-            let email = thread_emails[idx];
-            if email.subject.to_lowercase().contains(query)
-                || email.from_email.to_lowercase().contains(query)
-            {
-                self.selected_thread_email = Some(idx);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the first undo entry matching the query (for incremental search)
-    fn search_first_undo(&mut self, query: &str) -> bool {
-        for (idx, entry) in self.undo_history.iter().enumerate() {
-            if self.undo_entry_matches(entry, query) {
-                self.selected_undo = idx;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the next undo entry matching the query
-    fn search_next_undo(&mut self, query: &str) -> bool {
-        if self.undo_history.is_empty() {
-            return false;
-        }
-
-        let current_idx = self.selected_undo;
-
-        for i in 1..=self.undo_history.len() {
-            let idx = (current_idx + i) % self.undo_history.len();
-            if self.undo_entry_matches(&self.undo_history[idx], query) {
-                self.selected_undo = idx;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Search for the previous undo entry matching the query
-    fn search_previous_undo(&mut self, query: &str) -> bool {
-        if self.undo_history.is_empty() {
-            return false;
-        }
-
-        let current_idx = self.selected_undo;
-
-        for i in 1..=self.undo_history.len() {
-            let idx = (current_idx + self.undo_history.len() - i) % self.undo_history.len();
-            if self.undo_entry_matches(&self.undo_history[idx], query) {
-                self.selected_undo = idx;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Check if an undo entry matches the query
-    fn undo_entry_matches(&self, entry: &UndoEntry, query: &str) -> bool {
-        match &entry.context {
-            UndoContext::Group { sender } => sender.to_lowercase().contains(query),
-            UndoContext::Thread { subject } => subject.to_lowercase().contains(query),
-        }
-    }
-
     /// Removes all emails in threads that contain selected emails.
     /// This affects ALL emails in those threads, including from other senders.
     pub fn remove_selected_threads(&mut self) {
@@ -1489,11 +1269,19 @@ impl App {
             .map(|e| e.thread_id.clone())
             .collect();
 
-        // Remove all emails from those threads
-        self.emails.retain(|e| !thread_ids.contains(&e.thread_id));
+        // Remove all emails from those threads, tracking which IDs are removed
+        let mut removed_ids: HashSet<String> = HashSet::new();
+        self.emails.retain(|e| {
+            if thread_ids.contains(&e.thread_id) {
+                removed_ids.insert(e.id.clone());
+                false
+            } else {
+                true
+            }
+        });
 
-        // Clear selection since the emails are gone
-        self.selected_emails.clear();
+        // Only clear selections for emails that were actually removed
+        self.selected_emails.retain(|id| !removed_ids.contains(id));
 
         self.regroup();
         self.selected_email = None;
@@ -2549,54 +2337,7 @@ mod tests {
     }
 
     #[test]
-    fn test_search_next_in_group_list() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
-            create_test_email("2", "bob@example.com"),
-            create_test_email("3", "charlie@example.com"),
-        ]);
-
-        assert_eq!(app.view, View::GroupList);
-        assert_eq!(app.selected_group, 0);
-
-        // Search for "bob" - should find bob's group
-        let found = app.search_next("bob");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "bob@example.com");
-
-        // Search for "charlie" from bob - should wrap and find charlie
-        let found = app.search_next("charlie");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "charlie@example.com");
-    }
-
-    #[test]
-    fn test_search_previous_in_group_list() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
-            create_test_email("2", "bob@example.com"),
-            create_test_email("3", "charlie@example.com"),
-        ]);
-
-        // Start at charlie (last)
-        app.select_last();
-        assert_eq!(app.current_group().unwrap().key, "charlie@example.com");
-
-        // Search previous for "bob"
-        let found = app.search_previous("bob");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "bob@example.com");
-
-        // Search previous for "alice"
-        let found = app.search_previous("alice");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "alice@example.com");
-    }
-
-    #[test]
-    fn test_search_next_in_email_list() {
+    fn test_text_filter_hides_non_matching_emails() {
         let mut app = App::new();
         app.set_emails(vec![
             create_test_email_with_subject("1", "alice@example.com", "Hello World"),
@@ -2606,148 +2347,90 @@ mod tests {
 
         app.enter(); // Enter email list
         assert_eq!(app.view, View::EmailList);
-        assert_eq!(app.selected_email, Some(0));
+        assert_eq!(app.filtered_threads_in_current_group().len(), 3);
 
-        // Search for "goodbye"
-        let found = app.search_next("goodbye");
-        assert!(found);
-        assert_eq!(app.selected_email, Some(1));
-
-        // Search for "hello" - should find the next one (wrap to index 2)
-        let found = app.search_next("hello");
-        assert!(found);
-        assert_eq!(app.selected_email, Some(2));
-    }
-
-    #[test]
-    fn test_search_case_insensitive() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email("1", "ALICE@EXAMPLE.COM"),
-            create_test_email("2", "bob@example.com"),
-        ]);
-
-        // Search for lowercase "alice" should find uppercase ALICE
-        let found = app.search_next("alice");
-        assert!(found);
-        assert_eq!(
-            app.current_group().unwrap().key.to_lowercase(),
-            "alice@example.com"
+        // Apply filter for "hello"
+        app.set_text_filter(Some("hello".to_string()));
+        let filtered = app.filtered_threads_in_current_group();
+        assert_eq!(filtered.len(), 2);
+        assert!(
+            filtered
+                .iter()
+                .all(|e| e.subject.to_lowercase().contains("hello"))
         );
+
+        // Clear filter shows all emails again
+        app.clear_text_filter();
+        assert_eq!(app.filtered_threads_in_current_group().len(), 3);
     }
 
     #[test]
-    fn test_search_empty_query_returns_false() {
+    fn test_text_filter_is_case_insensitive() {
         let mut app = App::new();
-        app.set_emails(vec![create_test_email("1", "alice@example.com")]);
+        app.set_emails(vec![
+            create_test_email_with_subject("1", "alice@example.com", "HELLO World"),
+            create_test_email_with_subject("2", "alice@example.com", "Goodbye Moon"),
+        ]);
 
-        let found = app.search_next("");
-        assert!(!found);
+        app.enter();
+        app.set_text_filter(Some("hello".to_string()));
+        let filtered = app.filtered_threads_in_current_group();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].subject.contains("HELLO"));
     }
 
     #[test]
-    fn test_search_no_match_returns_false() {
+    fn test_text_filter_matches_sender() {
         let mut app = App::new();
-        app.set_emails(vec![create_test_email("1", "alice@example.com")]);
+        app.set_emails(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Subject One"),
+            create_test_email_with_subject("2", "alice@example.com", "Subject Two"),
+        ]);
 
-        let found = app.search_next("zzz");
-        assert!(!found);
-        assert_eq!(app.selected_group, 0); // Selection unchanged
+        app.enter();
+        // Filter by partial sender name (which appears in from field)
+        app.set_text_filter(Some("alice".to_string()));
+        // Both should match since they're from alice
+        assert_eq!(app.filtered_threads_in_current_group().len(), 2);
+
+        // Filter by something that doesn't match
+        app.set_text_filter(Some("bob".to_string()));
+        assert_eq!(app.filtered_threads_in_current_group().len(), 0);
     }
 
     #[test]
-    fn test_search_wraps_around() {
+    fn test_text_filter_adjusts_selection() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_subject("1", "alice@example.com", "First"),
+            create_test_email_with_subject("2", "alice@example.com", "Second"),
+            create_test_email_with_subject("3", "alice@example.com", "Third"),
+        ]);
+
+        app.enter();
+        app.selected_email = Some(2); // Select the third email
+
+        // Apply filter that hides the selected email
+        app.set_text_filter(Some("First".to_string()));
+
+        // Selection should be adjusted to first visible
+        assert_eq!(app.selected_email, Some(0));
+    }
+
+    #[test]
+    fn test_text_filter_cleared_on_exit_to_groups() {
         let mut app = App::new();
         app.set_emails(vec![
             create_test_email("1", "alice@example.com"),
             create_test_email("2", "bob@example.com"),
         ]);
 
-        // Start at bob
-        app.select_last();
-        assert_eq!(app.current_group().unwrap().key, "bob@example.com");
+        app.enter(); // Enter email list
+        app.set_text_filter(Some("test".to_string()));
+        assert!(app.has_text_filter());
 
-        // Search next for "alice" should wrap to find alice
-        let found = app.search_next("alice");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "alice@example.com");
-    }
-
-    #[test]
-    fn test_search_first_finds_first_match() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
-            create_test_email("2", "bob@example.com"),
-            create_test_email("3", "charlie@example.com"),
-        ]);
-
-        // Start at charlie
-        app.select_last();
-        assert_eq!(app.current_group().unwrap().key, "charlie@example.com");
-
-        // search_first should find alice (the first match from the beginning)
-        let found = app.search_first("a");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "alice@example.com");
-
-        // Now search_first for "example" should also find alice (first match)
-        app.select_last();
-        let found = app.search_first("example");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "alice@example.com");
-    }
-
-    #[test]
-    fn test_search_first_incremental_narrowing() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
-            create_test_email("2", "bob@example.com"),
-            create_test_email("3", "alex@example.com"),
-        ]);
-
-        // Type "a" - should find alice (first 'a' match)
-        let found = app.search_first("a");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "alex@example.com");
-
-        // Type "al" - should still find alice (first 'al' match)
-        let found = app.search_first("al");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "alex@example.com");
-
-        // Type "ali" - should find alice
-        let found = app.search_first("ali");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "alice@example.com");
-
-        // Type "alic" - should still be alice
-        let found = app.search_first("alic");
-        assert!(found);
-        assert_eq!(app.current_group().unwrap().key, "alice@example.com");
-    }
-
-    #[test]
-    fn test_restore_selection() {
-        let mut app = App::new();
-        app.set_emails(vec![
-            create_test_email("1", "alice@example.com"),
-            create_test_email("2", "bob@example.com"),
-        ]);
-
-        // Start at bob
-        app.select_last();
-        let original_group = app.selected_group;
-        assert_eq!(app.current_group().unwrap().key, "bob@example.com");
-
-        // Search moves to alice
-        app.search_first("alice");
-        assert_eq!(app.current_group().unwrap().key, "alice@example.com");
-
-        // Restore should go back to bob
-        app.restore_selection(original_group, None, None, 0);
-        assert_eq!(app.current_group().unwrap().key, "bob@example.com");
+        app.exit(); // Exit back to group list
+        assert!(!app.has_text_filter());
     }
 
     #[test]
@@ -2883,6 +2566,51 @@ mod tests {
         assert!(
             ids.contains(&"2"),
             "Should contain bob's email from same thread"
+        );
+    }
+
+    #[test]
+    fn test_remove_selected_threads_preserves_hidden_selections() {
+        // When filtering hides some selected emails, removing visible selections
+        // should preserve the hidden selections
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_b", "alice@example.com"),
+            create_test_email_with_thread("3", "thread_c", "alice@example.com"),
+        ]);
+
+        // Give the emails different subjects for filtering
+        app.emails[0].subject = "Important meeting".to_string();
+        app.emails[1].subject = "Urgent task".to_string();
+        app.emails[2].subject = "Important update".to_string();
+        app.regroup();
+
+        app.enter(); // Enter alice's group
+
+        // Select all three emails
+        app.selected_emails.insert("1".to_string());
+        app.selected_emails.insert("2".to_string());
+        app.selected_emails.insert("3".to_string());
+
+        // Apply filter that hides email 2 ("Urgent task")
+        app.set_text_filter(Some("Important".to_string()));
+
+        // Remove selected threads (should only remove 1 and 3)
+        app.remove_selected_threads();
+
+        // Email 2's selection should be preserved since it was hidden
+        assert!(
+            app.is_email_selected("2"),
+            "Hidden selection should be preserved"
+        );
+        assert!(
+            !app.is_email_selected("1"),
+            "Deleted email should not be selected"
+        );
+        assert!(
+            !app.is_email_selected("3"),
+            "Deleted email should not be selected"
         );
     }
 }

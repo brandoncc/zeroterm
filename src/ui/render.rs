@@ -7,7 +7,7 @@ use ratatui::{
 use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
-    GroupListWidget, HelpBarWidget, HelpMenuWidget, InboxZeroWidget, SearchBarWidget,
+    FilterBarWidget, GroupListWidget, HelpBarWidget, HelpMenuWidget, InboxZeroWidget,
     StatusModalWidget, TextViewWidget, ThreadViewWidget, UiState, UndoHistoryWidget,
 };
 
@@ -121,10 +121,10 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
         }
     }
 
-    // Render help bar or search bar
-    if ui_state.is_searching() {
-        let search = SearchBarWidget::new(ui_state.search_query());
-        frame.render_widget(search, chunks[1]);
+    // Render help bar or filter bar
+    if ui_state.is_filter_input_active() {
+        let filter = FilterBarWidget::new(ui_state.filter_query());
+        frame.render_widget(filter, chunks[1]);
     } else {
         let help = HelpBarWidget::new(app);
         frame.render_widget(help, chunks[1]);
