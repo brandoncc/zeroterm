@@ -32,9 +32,17 @@ fn format_date(date: &DateTime<Utc>) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmAction {
     /// Archive all emails in threads touched by this sender's emails
-    ArchiveEmails { sender: String, count: usize },
+    ArchiveEmails {
+        sender: String,
+        count: usize,
+        filtered: bool,
+    },
     /// Delete all emails in threads touched by this sender's emails
-    DeleteEmails { sender: String, count: usize },
+    DeleteEmails {
+        sender: String,
+        count: usize,
+        filtered: bool,
+    },
     /// Archive entire thread (all emails including other senders)
     ArchiveThread { thread_email_count: usize },
     /// Delete entire thread (all emails including other senders)
@@ -50,11 +58,33 @@ pub enum ConfirmAction {
 impl ConfirmAction {
     pub fn message(&self) -> String {
         match self {
-            ConfirmAction::ArchiveEmails { sender, count } => {
-                format!("📥 Archive {} email(s) from {}? (y/n)", count, sender)
+            ConfirmAction::ArchiveEmails {
+                sender,
+                count,
+                filtered,
+            } => {
+                if *filtered {
+                    format!(
+                        "📥 Archive {} filtered email(s) from {}? (y/n)",
+                        count, sender
+                    )
+                } else {
+                    format!("📥 Archive {} email(s) from {}? (y/n)", count, sender)
+                }
             }
-            ConfirmAction::DeleteEmails { sender, count } => {
-                format!("🗑  Delete {} email(s) from {}? (y/n)", count, sender)
+            ConfirmAction::DeleteEmails {
+                sender,
+                count,
+                filtered,
+            } => {
+                if *filtered {
+                    format!(
+                        "🗑  Delete {} filtered email(s) from {}? (y/n)",
+                        count, sender
+                    )
+                } else {
+                    format!("🗑  Delete {} email(s) from {}? (y/n)", count, sender)
+                }
             }
             ConfirmAction::ArchiveThread { thread_email_count } => {
                 format!(
@@ -1532,9 +1562,23 @@ mod tests {
         let action = ConfirmAction::ArchiveEmails {
             sender: "test@example.com".to_string(),
             count: 5,
+            filtered: false,
         };
         let msg = action.message();
         assert!(msg.contains("Archive 5 email(s)"));
+        assert!(msg.contains("test@example.com"));
+        assert!(!msg.contains("filtered"));
+    }
+
+    #[test]
+    fn test_confirm_action_archive_emails_filtered() {
+        let action = ConfirmAction::ArchiveEmails {
+            sender: "test@example.com".to_string(),
+            count: 2,
+            filtered: true,
+        };
+        let msg = action.message();
+        assert!(msg.contains("Archive 2 filtered email(s)"));
         assert!(msg.contains("test@example.com"));
     }
 
@@ -1543,9 +1587,23 @@ mod tests {
         let action = ConfirmAction::DeleteEmails {
             sender: "test@example.com".to_string(),
             count: 3,
+            filtered: false,
         };
         let msg = action.message();
         assert!(msg.contains("Delete 3 email(s)"));
+        assert!(msg.contains("test@example.com"));
+        assert!(!msg.contains("filtered"));
+    }
+
+    #[test]
+    fn test_confirm_action_delete_emails_filtered() {
+        let action = ConfirmAction::DeleteEmails {
+            sender: "test@example.com".to_string(),
+            count: 4,
+            filtered: true,
+        };
+        let msg = action.message();
+        assert!(msg.contains("Delete 4 filtered email(s)"));
         assert!(msg.contains("test@example.com"));
     }
 

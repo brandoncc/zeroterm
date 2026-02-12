@@ -1022,6 +1022,7 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
+                    filtered: false,
                 });
             }
         }
@@ -1089,6 +1090,7 @@ fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
+                    filtered: false,
                 });
             }
         }
@@ -2584,6 +2586,7 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState) {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
+                    filtered: false,
                 });
             }
         }
@@ -2666,6 +2669,7 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState) {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
+                    filtered: false,
                 });
             }
         }
