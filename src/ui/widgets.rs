@@ -320,9 +320,13 @@ impl UiState {
         self.filter_query.clear();
     }
 
+    /// Set the filter query to a specific value
+    pub fn set_filter_query(&mut self, query: &str) {
+        self.filter_query = query.to_string();
+    }
+
     /// Revert to the snapshotted filter query and clear the snapshot.
     /// Returns the snapshot (None if there was no active filter when input mode started).
-    #[allow(dead_code)] // Used by tests now, callers added in func-3
     pub fn revert_filter(&mut self) -> Option<String> {
         self.filter_revert_query.take()
     }

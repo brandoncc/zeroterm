@@ -492,9 +492,15 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
             if ui_state.is_filter_input_active() {
                 match key.code {
                     KeyCode::Esc => {
-                        // Clear filter entirely and exit input mode
-                        app.clear_view_text_filter();
-                        ui_state.clear_filter_query();
+                        // Revert to previous filter and exit input mode
+                        let reverted = ui_state.revert_filter();
+                        if let Some(query) = &reverted {
+                            app.set_view_text_filter(Some(query.clone()));
+                            ui_state.set_filter_query(query);
+                        } else {
+                            app.clear_view_text_filter();
+                            ui_state.clear_filter_query();
+                        }
                         ui_state.exit_filter_input_mode();
                     }
                     KeyCode::Enter => {
@@ -652,11 +658,12 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     ui_state.set_confirm(ConfirmAction::Quit);
                 }
                 KeyCode::Esc => {
-                    // In EmailList view with active filter, clear filter instead of exiting
-                    if app.view == View::EmailList && app.has_view_text_filter() {
+                    // Layer 2: clear active filter in current view
+                    if app.has_view_text_filter() {
                         app.clear_view_text_filter();
                         ui_state.clear_filter_query();
                     } else if app.view != View::GroupList {
+                        // Layer 3: exit view (EmailList → GroupList; GroupList does nothing)
                         app.exit();
                     }
                 }
@@ -2128,9 +2135,15 @@ fn run_app(
             if ui_state.is_filter_input_active() {
                 match key.code {
                     KeyCode::Esc => {
-                        // Clear filter entirely and exit input mode
-                        app.clear_view_text_filter();
-                        ui_state.clear_filter_query();
+                        // Revert to previous filter and exit input mode
+                        let reverted = ui_state.revert_filter();
+                        if let Some(query) = &reverted {
+                            app.set_view_text_filter(Some(query.clone()));
+                            ui_state.set_filter_query(query);
+                        } else {
+                            app.clear_view_text_filter();
+                            ui_state.clear_filter_query();
+                        }
                         ui_state.exit_filter_input_mode();
                     }
                     KeyCode::Enter => {
@@ -2315,11 +2328,12 @@ fn run_app(
                     ui_state.set_confirm(ConfirmAction::Quit);
                 }
                 KeyCode::Esc => {
-                    // In EmailList view with active filter, clear filter instead of exiting
-                    if app.view == View::EmailList && app.has_view_text_filter() {
+                    // Layer 2: clear active filter in current view
+                    if app.has_view_text_filter() {
                         app.clear_view_text_filter();
                         ui_state.clear_filter_query();
                     } else if app.view != View::GroupList {
+                        // Layer 3: exit view (EmailList → GroupList; GroupList does nothing)
                         app.exit();
                     }
                 }
