@@ -1250,6 +1250,21 @@ impl App {
         !self.selected_emails.is_empty()
     }
 
+    /// Returns whether any selected emails are visible in the current filtered view.
+    /// Returns false when all selections are hidden by the text filter, or when there are no selections.
+    #[allow(dead_code)] // Used in func-4: handle_delete/handle_archive will call this
+    pub fn has_visible_selection(&self) -> bool {
+        let visible_ids: HashSet<&str> = self
+            .filtered_emails_in_current_group()
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
+
+        self.selected_emails
+            .iter()
+            .any(|id| visible_ids.contains(id.as_str()))
+    }
+
     /// Returns the current thread's emails' data for undo support: (uid, message_id, source_folder)
     pub fn current_thread_emails_for_undo(&self) -> Vec<(String, Option<String>, String)> {
         self.current_thread_emails()
@@ -2611,6 +2626,76 @@ mod tests {
         assert!(
             !app.is_email_selected("3"),
             "Deleted email should not be selected"
+        );
+    }
+
+    #[test]
+    fn test_has_visible_selection_false_with_no_selections() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.enter();
+
+        assert!(!app.has_visible_selection());
+    }
+
+    #[test]
+    fn test_has_visible_selection_true_with_visible_selections() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.enter();
+
+        app.selected_emails.insert("1".to_string());
+        assert!(app.has_visible_selection());
+    }
+
+    #[test]
+    fn test_has_visible_selection_false_when_all_selections_hidden() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important meeting"),
+            create_test_email_with_subject("2", "alice@example.com", "Urgent task"),
+        ]);
+        app.enter();
+
+        // Select email 2 which has "Urgent" in subject
+        app.selected_emails.insert("2".to_string());
+
+        // Filter to only show "Important" — hides email 2
+        app.set_text_filter(Some("Important".to_string()));
+
+        assert!(app.has_selection(), "Selection still exists");
+        assert!(
+            !app.has_visible_selection(),
+            "No visible selection since email 2 is hidden"
+        );
+    }
+
+    #[test]
+    fn test_has_visible_selection_true_when_some_visible_some_hidden() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important meeting"),
+            create_test_email_with_subject("2", "alice@example.com", "Urgent task"),
+            create_test_email_with_subject("3", "alice@example.com", "Important update"),
+        ]);
+        app.enter();
+
+        // Select emails 1 and 2
+        app.selected_emails.insert("1".to_string());
+        app.selected_emails.insert("2".to_string());
+
+        // Filter to only show "Important" — hides email 2 but email 1 is still visible
+        app.set_text_filter(Some("Important".to_string()));
+
+        assert!(
+            app.has_visible_selection(),
+            "Should be true because email 1 is visible and selected"
         );
     }
 }
