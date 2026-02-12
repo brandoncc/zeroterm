@@ -488,7 +488,7 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
-            // Handle filter input mode (only in EmailList view)
+            // Handle filter input mode (GroupList and EmailList views)
             if ui_state.is_filter_input_active() {
                 match key.code {
                     KeyCode::Esc => {
@@ -528,8 +528,10 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
-            // Enter filter mode with / (only in EmailList view)
-            if key.code == KeyCode::Char('/') && app.view == View::EmailList {
+            // Enter filter mode with / (GroupList and EmailList views)
+            if key.code == KeyCode::Char('/')
+                && matches!(app.view, View::GroupList | View::EmailList)
+            {
                 let current = app.view_text_filter().map(|s| s.to_string());
                 if app.has_view_text_filter() {
                     // Re-enter input mode with existing query
@@ -2122,7 +2124,7 @@ fn run_app(
                 continue;
             }
 
-            // Handle filter input mode (only in EmailList view)
+            // Handle filter input mode (GroupList and EmailList views)
             if ui_state.is_filter_input_active() {
                 match key.code {
                     KeyCode::Esc => {
@@ -2162,8 +2164,10 @@ fn run_app(
                 continue;
             }
 
-            // Enter filter mode with / (only in EmailList view)
-            if key.code == KeyCode::Char('/') && app.view == View::EmailList {
+            // Enter filter mode with / (GroupList and EmailList views)
+            if key.code == KeyCode::Char('/')
+                && matches!(app.view, View::GroupList | View::EmailList)
+            {
                 let current = app.view_text_filter().map(|s| s.to_string());
                 if app.has_view_text_filter() {
                     // Re-enter input mode with existing query
