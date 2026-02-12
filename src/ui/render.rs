@@ -8,7 +8,8 @@ use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
     FilterBarWidget, GroupListWidget, HelpBarWidget, HelpMenuWidget, InboxZeroWidget,
-    StatusModalWidget, TextViewWidget, ThreadViewWidget, UiState, UndoHistoryWidget,
+    PassiveFilterBarWidget, StatusModalWidget, TextViewWidget, ThreadViewWidget, UiState,
+    UndoHistoryWidget, help_text_for_app,
 };
 
 /// Renders the entire application UI
@@ -125,6 +126,10 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
     if ui_state.is_filter_input_active() {
         let filter = FilterBarWidget::new(ui_state.filter_query());
         frame.render_widget(filter, chunks[1]);
+    } else if let Some(query) = app.view_text_filter() {
+        let help_text = help_text_for_app(app);
+        let passive = PassiveFilterBarWidget::new(query, help_text);
+        frame.render_widget(passive, chunks[1]);
     } else {
         let help = HelpBarWidget::new(app);
         frame.render_widget(help, chunks[1]);

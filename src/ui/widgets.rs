@@ -1187,6 +1187,112 @@ impl Widget for FilterBarWidget<'_> {
     }
 }
 
+/// Widget for the passive filter bar (confirmed filter + help text on same line)
+pub struct PassiveFilterBarWidget<'a> {
+    filter_query: &'a str,
+    help_text: &'a str,
+}
+
+impl<'a> PassiveFilterBarWidget<'a> {
+    pub fn new(filter_query: &'a str, help_text: &'a str) -> Self {
+        Self {
+            filter_query,
+            help_text,
+        }
+    }
+}
+
+impl Widget for PassiveFilterBarWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let width = area.width as usize;
+        if width == 0 {
+            return;
+        }
+
+        // Build filter portion: [filter: query]
+        let filter_prefix = "[filter: ";
+        let filter_suffix = "]";
+        let separator = " │ ";
+
+        // Calculate space available for filter text
+        let filter_chrome = filter_prefix.len() + filter_suffix.len();
+        let separator_len = separator.len();
+
+        // Minimum meaningful display: "[filter: q…] │ " + at least some help text
+        let min_filter_display = filter_chrome + 2; // at least "q…"
+
+        if width < min_filter_display {
+            // Too narrow for filter, just show help text
+            let line = Line::from(Span::styled(
+                self.help_text,
+                Style::default().fg(Color::DarkGray),
+            ));
+            buf.set_line(area.x, area.y, &line, area.width);
+            return;
+        }
+
+        // Calculate how much space filter+separator takes
+        let full_filter = format!("{}{}{}", filter_prefix, self.filter_query, filter_suffix);
+        let full_filter_len = full_filter.len();
+
+        let filter_display = if full_filter_len + separator_len <= width {
+            // Filter fits entirely, show it + separator + help text
+            full_filter
+        } else {
+            // Need to truncate filter query
+            let max_query_len = width
+                .saturating_sub(filter_chrome + separator_len)
+                .saturating_sub(1); // -1 for …
+            if max_query_len == 0 {
+                format!("{}…{}", filter_prefix, filter_suffix)
+            } else {
+                let truncated: String = self.filter_query.chars().take(max_query_len).collect();
+                format!("{}{}…{}", filter_prefix, truncated, filter_suffix)
+            }
+        };
+
+        let filter_len = filter_display.len();
+        let remaining = width.saturating_sub(filter_len + separator_len);
+
+        let help_portion: String = self.help_text.chars().take(remaining).collect();
+
+        let line = Line::from(vec![
+            Span::styled(filter_display, Style::default().fg(Color::DarkGray)),
+            Span::styled(separator, Style::default().fg(Color::DarkGray)),
+            Span::styled(help_portion, Style::default().fg(Color::DarkGray)),
+        ]);
+
+        buf.set_line(area.x, area.y, &line, area.width);
+    }
+}
+
+/// Returns the help bar text for the current view
+pub fn help_text_for_app(app: &App) -> &'static str {
+    match app.view {
+        View::GroupList => {
+            if app.groups.is_empty() {
+                "r: refresh  q: quit  ?: more"
+            } else {
+                "j/k: navigate  Enter: open  q: quit  ?: more"
+            }
+        }
+        View::EmailList => {
+            if app.has_email_text_filter() {
+                "j/k: navigate  /: edit filter  Esc: clear filter  a/d: archive/delete  ?: more"
+            } else if app.has_selection() {
+                "j/k: navigate  /: filter  a/d: archive/delete selected  q: back  ?: more"
+            } else {
+                "j/k: navigate  /: filter  a/d: archive/delete  q: back  ?: more"
+            }
+        }
+        View::Thread => {
+            "j/k: navigate  Enter: view body  e: browser  A/D: archive/delete  q: back  ?: more"
+        }
+        View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
+        View::EmailBody => "j/k: scroll  e: browser  Esc: back  q: quit  ?: more",
+    }
+}
+
 /// Widget for the help bar at the bottom
 pub struct HelpBarWidget<'a> {
     app: &'a App,
@@ -1200,32 +1306,8 @@ impl<'a> HelpBarWidget<'a> {
 
 impl Widget for HelpBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let help_text = match self.app.view {
-            View::GroupList => {
-                if self.app.groups.is_empty() {
-                    "r: refresh  q: quit  ?: more"
-                } else {
-                    "j/k: navigate  Enter: open  q: quit  ?: more"
-                }
-            }
-            View::EmailList => {
-                if self.app.has_email_text_filter() {
-                    "j/k: navigate  /: edit filter  Esc: clear filter  a/d: archive/delete  ?: more"
-                } else if self.app.has_selection() {
-                    "j/k: navigate  /: filter  a/d: archive/delete selected  q: back  ?: more"
-                } else {
-                    "j/k: navigate  /: filter  a/d: archive/delete  q: back  ?: more"
-                }
-            }
-            View::Thread => {
-                "j/k: navigate  Enter: view body  e: browser  A/D: archive/delete  q: back  ?: more"
-            }
-            View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
-            View::EmailBody => "j/k: scroll  e: browser  Esc: back  q: quit  ?: more",
-        };
-
+        let help_text = help_text_for_app(self.app);
         let paragraph = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
-
         paragraph.render(area, buf);
     }
 }
