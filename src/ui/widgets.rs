@@ -180,6 +180,8 @@ pub struct UiState {
     pub filter_input_mode: bool,
     /// The current filter query being typed
     pub filter_query: String,
+    /// Snapshot of the filter query when entering input mode, for Esc-to-revert
+    filter_revert_query: Option<String>,
     /// State of the text view (loading, loaded, error)
     pub text_view_state: TextViewState,
 }
@@ -269,14 +271,22 @@ impl UiState {
     }
 
     /// Enter filter input mode (user is typing filter query)
-    pub fn enter_filter_input_mode(&mut self) {
+    /// Snapshots the current filter so Esc can revert to it.
+    pub fn enter_filter_input_mode(&mut self, current_filter: Option<&str>) {
         self.filter_input_mode = true;
+        self.filter_revert_query = current_filter.map(|s| s.to_string());
         self.filter_query.clear();
     }
 
     /// Enter filter input mode with existing query (for editing active filter)
-    pub fn enter_filter_input_mode_with_query(&mut self, query: &str) {
+    /// Snapshots the current filter so Esc can revert to it.
+    pub fn enter_filter_input_mode_with_query(
+        &mut self,
+        query: &str,
+        current_filter: Option<&str>,
+    ) {
         self.filter_input_mode = true;
+        self.filter_revert_query = current_filter.map(|s| s.to_string());
         self.filter_query = query.to_string();
     }
 
@@ -308,6 +318,13 @@ impl UiState {
     /// Clear the filter query
     pub fn clear_filter_query(&mut self) {
         self.filter_query.clear();
+    }
+
+    /// Revert to the snapshotted filter query and clear the snapshot.
+    /// Returns the snapshot (None if there was no active filter when input mode started).
+    #[allow(dead_code)] // Used by tests now, callers added in func-3
+    pub fn revert_filter(&mut self) -> Option<String> {
+        self.filter_revert_query.take()
     }
 }
 
@@ -1648,5 +1665,35 @@ mod tests {
 
         state.clear_status();
         assert!(state.status_message.is_none());
+    }
+
+    #[test]
+    fn test_enter_filter_input_mode_with_active_filter_snapshots_it() {
+        let mut state = UiState::new();
+        state.enter_filter_input_mode(Some("query"));
+        assert_eq!(state.revert_filter(), Some("query".to_string()));
+    }
+
+    #[test]
+    fn test_enter_filter_input_mode_with_no_filter_reverts_to_none() {
+        let mut state = UiState::new();
+        state.enter_filter_input_mode(None);
+        assert_eq!(state.revert_filter(), None);
+    }
+
+    #[test]
+    fn test_revert_filter_clears_snapshot_after_first_call() {
+        let mut state = UiState::new();
+        state.enter_filter_input_mode(Some("query"));
+        assert_eq!(state.revert_filter(), Some("query".to_string()));
+        assert_eq!(state.revert_filter(), None);
+    }
+
+    #[test]
+    fn test_enter_filter_input_mode_with_query_snapshots_current_filter() {
+        let mut state = UiState::new();
+        state.enter_filter_input_mode_with_query("editing", Some("original"));
+        assert_eq!(state.filter_query(), "editing");
+        assert_eq!(state.revert_filter(), Some("original".to_string()));
     }
 }

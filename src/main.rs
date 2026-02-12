@@ -530,13 +530,16 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
 
             // Enter filter mode with / (only in EmailList view)
             if key.code == KeyCode::Char('/') && app.view == View::EmailList {
+                let current = app.view_text_filter().map(|s| s.to_string());
                 if app.has_view_text_filter() {
                     // Re-enter input mode with existing query
-                    ui_state
-                        .enter_filter_input_mode_with_query(app.view_text_filter().unwrap_or(""));
+                    ui_state.enter_filter_input_mode_with_query(
+                        current.as_deref().unwrap_or(""),
+                        current.as_deref(),
+                    );
                 } else {
                     // Enter fresh filter input mode
-                    ui_state.enter_filter_input_mode();
+                    ui_state.enter_filter_input_mode(current.as_deref());
                 }
                 continue;
             }
@@ -2161,13 +2164,16 @@ fn run_app(
 
             // Enter filter mode with / (only in EmailList view)
             if key.code == KeyCode::Char('/') && app.view == View::EmailList {
+                let current = app.view_text_filter().map(|s| s.to_string());
                 if app.has_view_text_filter() {
                     // Re-enter input mode with existing query
-                    ui_state
-                        .enter_filter_input_mode_with_query(app.view_text_filter().unwrap_or(""));
+                    ui_state.enter_filter_input_mode_with_query(
+                        current.as_deref().unwrap_or(""),
+                        current.as_deref(),
+                    );
                 } else {
                     // Enter fresh filter input mode
-                    ui_state.enter_filter_input_mode();
+                    ui_state.enter_filter_input_mode(current.as_deref());
                 }
                 continue;
             }
