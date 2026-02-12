@@ -258,6 +258,7 @@ struct DemoUndoStorage {
 const DEMO_LATENCY_MS: u64 = 300;
 
 /// Pending operations in demo mode (mirrors PendingOp for real mode)
+#[derive(Debug)]
 enum DemoPendingOp {
     ArchiveGroup {
         emails: Vec<Email>,
@@ -974,8 +975,8 @@ fn handle_demo_archive(app: &App, ui_state: &mut UiState) -> Option<DemoPendingO
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => None,
         View::EmailList => {
-            // Check if there are selected emails - require confirmation
-            if app.has_selection() {
+            // Check if there are visible selected emails - require confirmation
+            if app.has_visible_selection() {
                 let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
@@ -983,7 +984,7 @@ fn handle_demo_archive(app: &App, ui_state: &mut UiState) -> Option<DemoPendingO
                 return None;
             }
 
-            // No selection - archive the entire thread
+            // No visible selection - archive the entire thread
             let thread_emails: Vec<Email> =
                 app.current_thread_emails().into_iter().cloned().collect();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
@@ -1033,8 +1034,8 @@ fn handle_demo_delete(app: &App, ui_state: &mut UiState) -> Option<DemoPendingOp
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => None,
         View::EmailList => {
-            // Check if there are selected emails - require confirmation
-            if app.has_selection() {
+            // Check if there are visible selected emails - require confirmation
+            if app.has_visible_selection() {
                 let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
@@ -1042,7 +1043,7 @@ fn handle_demo_delete(app: &App, ui_state: &mut UiState) -> Option<DemoPendingOp
                 return None;
             }
 
-            // No selection - delete the entire thread
+            // No visible selection - delete the entire thread
             let thread_emails: Vec<Email> =
                 app.current_thread_emails().into_iter().cloned().collect();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
@@ -2513,8 +2514,8 @@ fn handle_archive(
             // No action on single 'a' in group list, undo history, or text view
         }
         View::EmailList => {
-            // Check if there are selected emails - require confirmation
-            if app.has_selection() {
+            // Check if there are visible selected emails - require confirmation
+            if app.has_visible_selection() {
                 let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
@@ -2522,7 +2523,7 @@ fn handle_archive(
                 return Ok(());
             }
 
-            // No selection - archive the entire thread
+            // No visible selection - archive the entire thread
             let email_ids = app.current_thread_email_ids();
             let emails_for_undo = app.current_thread_emails_for_undo();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
@@ -2587,8 +2588,8 @@ fn handle_delete(
             // No action on single 'd' in group list, undo history, or text view
         }
         View::EmailList => {
-            // Check if there are selected emails - require confirmation
-            if app.has_selection() {
+            // Check if there are visible selected emails - require confirmation
+            if app.has_visible_selection() {
                 let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
@@ -2596,7 +2597,7 @@ fn handle_delete(
                 return Ok(());
             }
 
-            // No selection - delete the entire thread
+            // No visible selection - delete the entire thread
             let email_ids = app.current_thread_email_ids();
             let emails_for_undo = app.current_thread_emails_for_undo();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
@@ -3062,6 +3063,98 @@ mod tests {
                 assert!(filtered);
             }
             other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    // --- handle_delete (lowercase d) tests ---
+
+    #[test]
+    fn test_delete_with_visible_selection_triggers_delete_selected() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection(); // select first email
+        let mut ui_state = UiState::new();
+
+        handle_demo_delete(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteSelected { count }) => {
+                assert!(count > 0);
+            }
+            other => panic!("Expected DeleteSelected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_with_only_hidden_selections_falls_through_to_cursor_thread() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        // Cursor starts at index 0 (newest email = "2" / "Other" since it was created last)
+        // Select it, then apply filter that hides it
+        app.toggle_email_selection();
+        app.set_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        // With only hidden selections, should fall through to cursor-thread behavior
+        let result = handle_demo_delete(&app, &mut ui_state);
+
+        // Should NOT show DeleteSelected confirmation
+        assert!(ui_state.confirm_action.is_none());
+        // Should return a DeleteThread pending op (cursor-thread behavior)
+        assert!(result.is_some(), "Expected DeleteThread pending op");
+        match result.unwrap() {
+            DemoPendingOp::DeleteThread { .. } => {}
+            other => panic!("Expected DeleteThread, got {:?}", other),
+        }
+    }
+
+    // --- handle_archive (lowercase a) tests ---
+
+    #[test]
+    fn test_archive_with_visible_selection_triggers_archive_selected() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection(); // select first email
+        let mut ui_state = UiState::new();
+
+        handle_demo_archive(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveSelected { count }) => {
+                assert!(count > 0);
+            }
+            other => panic!("Expected ArchiveSelected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_archive_with_only_hidden_selections_falls_through_to_cursor_thread() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        // Cursor starts at index 0 (newest email = "2" / "Other" since it was created last)
+        // Select it, then apply filter that hides it
+        app.toggle_email_selection();
+        app.set_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        // With only hidden selections, should fall through to cursor-thread behavior
+        let result = handle_demo_archive(&app, &mut ui_state);
+
+        // Should NOT show ArchiveSelected confirmation
+        assert!(ui_state.confirm_action.is_none());
+        // Should return an ArchiveThread pending op (cursor-thread behavior)
+        assert!(result.is_some(), "Expected ArchiveThread pending op");
+        match result.unwrap() {
+            DemoPendingOp::ArchiveThread { .. } => {}
+            other => panic!("Expected ArchiveThread, got {:?}", other),
         }
     }
 }

@@ -1252,7 +1252,6 @@ impl App {
 
     /// Returns whether any selected emails are visible in the current filtered view.
     /// Returns false when all selections are hidden by the text filter, or when there are no selections.
-    #[allow(dead_code)] // Used in func-4: handle_delete/handle_archive will call this
     pub fn has_visible_selection(&self) -> bool {
         let visible_ids: HashSet<&str> = self
             .filtered_emails_in_current_group()
