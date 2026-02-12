@@ -836,6 +836,7 @@ impl App {
     /// Sets the group text filter query
     pub fn set_group_text_filter(&mut self, query: Option<String>) {
         self.group_text_filter = query;
+        self.ensure_valid_selection();
     }
 
     /// Clears the group text filter
@@ -920,6 +921,14 @@ impl App {
         }
     }
 
+    /// Checks if a group's key matches the group text filter (case-insensitive)
+    fn group_matches_text_filter(&self, group: &EmailGroup) -> bool {
+        let Some(ref query) = self.group_text_filter else {
+            return true;
+        };
+        group.key.to_lowercase().contains(&query.to_lowercase())
+    }
+
     /// Checks if an email matches the email text filter (case-insensitive)
     fn email_matches_text_filter(&self, email: &Email) -> bool {
         let Some(ref query) = self.email_text_filter else {
@@ -963,9 +972,9 @@ impl App {
         }
     }
 
-    /// Returns groups filtered based on thread_filter setting
+    /// Returns groups filtered based on thread_filter and group_text_filter settings
     pub fn filtered_groups(&self) -> Vec<&EmailGroup> {
-        match self.thread_filter {
+        let thread_filtered: Vec<&EmailGroup> = match self.thread_filter {
             ThreadFilter::All => self.groups.iter().collect(),
             ThreadFilter::OnlyThreads => self
                 .groups
@@ -977,6 +986,15 @@ impl App {
                 .iter()
                 .filter(|g| self.group_has_single_message_threads(g))
                 .collect(),
+        };
+
+        if self.group_text_filter.is_some() {
+            thread_filtered
+                .into_iter()
+                .filter(|g| self.group_matches_text_filter(g))
+                .collect()
+        } else {
+            thread_filtered
         }
     }
 
@@ -2820,5 +2838,87 @@ mod tests {
             app.has_visible_selection(),
             "Should be true because email 1 is visible and selected"
         );
+    }
+
+    #[test]
+    fn test_filtered_groups_with_text_filter() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+            create_test_email("3", "charlie@example.com"),
+        ]);
+
+        assert_eq!(app.filtered_groups().len(), 3);
+
+        app.set_group_text_filter(Some("alice".to_string()));
+        let filtered = app.filtered_groups();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].key, "alice@example.com");
+    }
+
+    #[test]
+    fn test_filtered_groups_text_filter_case_insensitive() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "Alice@Example.com"),
+            create_test_email("2", "bob@example.com"),
+        ]);
+
+        app.set_group_text_filter(Some("ALICE".to_string()));
+        let filtered = app.filtered_groups();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].key.to_lowercase().contains("alice"));
+    }
+
+    #[test]
+    fn test_ensure_valid_selection_adjusts_for_group_text_filter() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+            create_test_email("3", "charlie@example.com"),
+        ]);
+
+        // Select bob (index 1)
+        app.selected_group = 1;
+        assert_eq!(app.groups[app.selected_group].key, "bob@example.com");
+
+        // Apply filter that hides bob
+        app.set_group_text_filter(Some("alice".to_string()));
+
+        // ensure_valid_selection is called by set_group_text_filter via set_view_text_filter path,
+        // but let's call it explicitly to be sure
+        app.ensure_valid_selection();
+
+        // Selection should move to the first visible group (alice)
+        let filtered = app.filtered_groups();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(app.groups[app.selected_group].key, "alice@example.com");
+    }
+
+    #[test]
+    fn test_filtered_groups_applies_both_thread_and_text_filter() {
+        let mut app = App::new();
+        // alice has a multi-message thread, bob has a single-message thread,
+        // charlie has a multi-message thread
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
+            create_test_email("3", "bob@example.com"),
+            create_test_email_with_thread("4", "thread_c", "charlie@example.com"),
+            create_test_email_with_thread("5", "thread_c", "charlie@example.com"),
+        ]);
+
+        // With OnlyThreads filter, only alice and charlie should appear
+        app.toggle_thread_filter(); // All -> OnlyThreads
+        assert_eq!(app.thread_filter, ThreadFilter::OnlyThreads);
+        assert_eq!(app.filtered_groups().len(), 2);
+
+        // Now also apply text filter for "alice"
+        app.set_group_text_filter(Some("alice".to_string()));
+        let filtered = app.filtered_groups();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].key, "alice@example.com");
     }
 }
