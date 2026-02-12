@@ -645,7 +645,21 @@ impl Widget for GroupListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Show message if filter is active but no groups match
+        // Show message if text filter is active but no groups match
+        if filtered_groups.is_empty() && self.app.has_group_text_filter() {
+            let msg = "No matching groups (Esc: clear filter)";
+            let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
+            let y = inner.y + inner.height / 2;
+            buf.set_line(
+                x,
+                y,
+                &Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray))),
+                inner.width,
+            );
+            return;
+        }
+
+        // Show message if thread filter is active but no groups match
         if filtered_groups.is_empty() && self.app.thread_filter != crate::app::ThreadFilter::All {
             let msg = match self.app.thread_filter {
                 crate::app::ThreadFilter::OnlyThreads => {
@@ -1781,5 +1795,85 @@ mod tests {
         state.enter_filter_input_mode_with_query("editing", Some("original"));
         assert_eq!(state.filter_query(), "editing");
         assert_eq!(state.revert_filter(), Some("original".to_string()));
+    }
+
+    /// Helper to extract all text from a buffer as a single string
+    fn buffer_text(buf: &Buffer) -> String {
+        let area = buf.area();
+        let mut text = String::new();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+        }
+        text
+    }
+
+    fn create_test_email(id: &str, from: &str) -> crate::email::Email {
+        crate::email::Email::new(
+            id.to_string(),
+            format!("thread_{id}"),
+            from.to_string(),
+            "Subject".to_string(),
+            "Snippet".to_string(),
+            chrono::Utc::now(),
+        )
+    }
+
+    #[test]
+    fn test_group_list_text_filter_no_matches_shows_empty_message() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+        ]);
+        app.set_group_text_filter(Some("nonexistent".to_string()));
+
+        // Verify preconditions
+        assert!(app.has_group_text_filter());
+        assert!(app.filtered_groups().is_empty());
+
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let widget = GroupListWidget::new(&app, 0);
+        widget.render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("No matching groups"),
+            "Expected 'No matching groups' in rendered output, got: {}",
+            text.trim()
+        );
+    }
+
+    #[test]
+    fn test_group_list_thread_filter_no_matches_shows_thread_message_when_no_text_filter() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+        ]);
+        // OnlyThreads filter with no multi-message threads → empty
+        app.toggle_thread_filter(); // All -> OnlyThreads
+
+        // Verify preconditions: no text filter, thread filter active, no groups match
+        assert!(!app.has_group_text_filter());
+        assert!(app.filtered_groups().is_empty());
+
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let widget = GroupListWidget::new(&app, 0);
+        widget.render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("No senders with threads"),
+            "Expected thread filter message in rendered output, got: {}",
+            text.trim()
+        );
+        assert!(
+            !text.contains("No matching groups"),
+            "Should not show text filter message when no text filter is active"
+        );
     }
 }
