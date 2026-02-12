@@ -49,7 +49,7 @@ This design ensures you always know exactly what emails will be affected before 
 | `q` | Quit |
 | `Escape` | Go back to previous view |
 
-### Filter Mode (Email List View)
+### Filter Mode (Group List & Email List Views)
 | Key | Action |
 |-----|--------|
 | `/` | Enter filter mode |
@@ -62,6 +62,8 @@ This design ensures you always know exactly what emails will be affected before 
 | Key | Action |
 |-----|--------|
 | `Enter` | Open group (view emails) |
+| `/` | Filter groups (hides non-matches) |
+| `Escape` | Clear filter |
 | `A` | Archive all emails from sender |
 | `D` | Delete all emails from sender |
 

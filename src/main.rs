@@ -94,7 +94,7 @@ NAVIGATION:
     j/k              Move down/up in lists
     Enter            Select group or email / view email body
     Escape           Go back to previous view / clear filter
-    /                Filter emails (in email list view)
+    /                Filter groups or emails
     q                Quit
 
 ACTIONS:

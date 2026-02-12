@@ -1286,8 +1286,10 @@ pub fn help_text_for_app(app: &App) -> &'static str {
         View::GroupList => {
             if app.groups.is_empty() {
                 "r: refresh  q: quit  ?: more"
+            } else if app.has_group_text_filter() {
+                "j/k: navigate  /: edit filter  Esc: clear filter  Enter: open  ?: more"
             } else {
-                "j/k: navigate  Enter: open  q: quit  ?: more"
+                "j/k: navigate  /: filter  Enter: open  q: quit  ?: more"
             }
         }
         View::EmailList => {
@@ -1349,6 +1351,20 @@ impl HelpMenuWidget {
             ],
         );
 
+        let nav_with_group_filter = (
+            "Navigation",
+            vec![
+                ("j / ↓", "Move down"),
+                ("k / ↑", "Move up"),
+                ("g g", "Go to top"),
+                ("G", "Go to bottom"),
+                ("Ctrl+d", "Half page down"),
+                ("Ctrl+u", "Half page up"),
+                ("/", "Filter groups"),
+                ("Esc", "Clear filter"),
+            ],
+        );
+
         let nav_with_filter = (
             "Navigation",
             vec![
@@ -1365,7 +1381,7 @@ impl HelpMenuWidget {
 
         match self.view {
             View::GroupList => vec![
-                nav,
+                nav_with_group_filter,
                 (
                     "Actions",
                     vec![
