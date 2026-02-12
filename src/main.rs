@@ -98,10 +98,10 @@ NAVIGATION:
     q                Quit
 
 ACTIONS:
-    a                Archive email (in group/email view)
-    d                Delete email (in group/email view)
-    A                Archive all emails from sender (with confirmation)
-    D                Delete all emails from sender (with confirmation)
+    a                Archive cursor thread, or selected threads
+    d                Delete cursor thread, or selected threads
+    A                Archive all visible emails from sender
+    D                Delete all visible emails from sender
     e                Open email in browser (Gmail)
     u                Undo last action
 

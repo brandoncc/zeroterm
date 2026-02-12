@@ -71,10 +71,10 @@ This design ensures you always know exactly what emails will be affected before 
 | `Enter` | View full thread |
 | `Space` | Toggle selection |
 | `/` | Filter emails (hides non-matches) |
-| `a` | Archive current email |
-| `A` | Archive selected/all emails from sender |
-| `d` | Delete current email |
-| `D` | Delete selected/all emails from sender |
+| `a` | Archive cursor thread, or selected threads if any are selected |
+| `A` | Archive all visible emails from sender (respects active filter) |
+| `d` | Delete cursor thread, or selected threads if any are selected |
+| `D` | Delete all visible emails from sender (respects active filter) |
 
 ### Thread View
 | Key | Action |
