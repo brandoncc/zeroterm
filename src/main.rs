@@ -1008,21 +1008,12 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {}
         View::EmailList => {
-            // If there are selected emails, archive those threads
-            if app.has_selection() {
-                let count = app.selected_thread_email_ids().len();
-                if count > 0 {
-                    ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
-                }
-                return;
-            }
-
-            // Archive all threads touched by this group's emails
+            // Archive all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
-                    filtered: false,
+                    filtered: app.has_text_filter(),
                 });
             }
         }
@@ -1076,21 +1067,12 @@ fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {}
         View::EmailList => {
-            // If there are selected emails, delete those threads
-            if app.has_selection() {
-                let count = app.selected_thread_email_ids().len();
-                if count > 0 {
-                    ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
-                }
-                return;
-            }
-
-            // Delete all threads touched by this group's emails
+            // Delete all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
-                    filtered: false,
+                    filtered: app.has_text_filter(),
                 });
             }
         }
@@ -2572,21 +2554,12 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState) {
             // No 'A' in group list view, undo history, or text view to prevent accidental bulk operations
         }
         View::EmailList => {
-            // If there are selected emails, archive those threads
-            if app.has_selection() {
-                let count = app.selected_thread_email_ids().len();
-                if count > 0 {
-                    ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
-                }
-                return;
-            }
-
-            // Archive all threads touched by this group's emails
+            // Archive all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
-                    filtered: false,
+                    filtered: app.has_text_filter(),
                 });
             }
         }
@@ -2655,21 +2628,12 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState) {
             // No 'D' in group list view, undo history, or text view to prevent accidental bulk operations
         }
         View::EmailList => {
-            // If there are selected emails, delete those threads
-            if app.has_selection() {
-                let count = app.selected_thread_email_ids().len();
-                if count > 0 {
-                    ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
-                }
-                return;
-            }
-
-            // Delete all threads touched by this group's emails
+            // Delete all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
-                    filtered: false,
+                    filtered: app.has_text_filter(),
                 });
             }
         }
@@ -2831,4 +2795,273 @@ fn handle_confirmed_action(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn create_test_email(id: &str, from: &str) -> Email {
+        Email::new(
+            id.to_string(),
+            format!("thread_{id}"),
+            from.to_string(),
+            "Subject".to_string(),
+            "Snippet".to_string(),
+            Utc::now(),
+        )
+    }
+
+    fn create_test_email_with_subject(id: &str, from: &str, subject: &str) -> Email {
+        Email::new(
+            id.to_string(),
+            format!("thread_{id}"),
+            from.to_string(),
+            subject.to_string(),
+            "Snippet".to_string(),
+            Utc::now(),
+        )
+    }
+
+    fn setup_app_in_email_list(emails: Vec<Email>) -> App {
+        let mut app = App::new();
+        app.set_emails(emails);
+        // Use enter() to navigate from GroupList into EmailList
+        app.enter();
+        assert_eq!(app.view, View::EmailList);
+        app
+    }
+
+    // --- handle_delete_all tests ---
+
+    #[test]
+    fn test_delete_all_without_selection_triggers_delete_emails() {
+        let app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        let mut ui_state = UiState::new();
+
+        handle_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_all_with_selection_still_triggers_delete_emails() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection();
+        let mut ui_state = UiState::new();
+
+        handle_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_all_with_text_filter_sets_filtered_true() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        app.set_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        handle_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails { filtered, .. }) => {
+                assert!(filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    // --- handle_archive_all tests ---
+
+    #[test]
+    fn test_archive_all_without_selection_triggers_archive_emails() {
+        let app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        let mut ui_state = UiState::new();
+
+        handle_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_archive_all_with_selection_still_triggers_archive_emails() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection();
+        let mut ui_state = UiState::new();
+
+        handle_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_archive_all_with_text_filter_sets_filtered_true() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        app.set_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        handle_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails { filtered, .. }) => {
+                assert!(filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    // --- handle_demo_delete_all tests ---
+
+    #[test]
+    fn test_demo_delete_all_with_selection_still_triggers_delete_emails() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection();
+        let mut ui_state = UiState::new();
+
+        handle_demo_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_demo_delete_all_with_text_filter_sets_filtered_true() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        app.set_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        handle_demo_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails { filtered, .. }) => {
+                assert!(filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    // --- handle_demo_archive_all tests ---
+
+    #[test]
+    fn test_demo_archive_all_with_selection_still_triggers_archive_emails() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection();
+        let mut ui_state = UiState::new();
+
+        handle_demo_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_demo_archive_all_with_text_filter_sets_filtered_true() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        app.set_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        handle_demo_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails { filtered, .. }) => {
+                assert!(filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
 }
