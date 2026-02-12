@@ -493,7 +493,7 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 match key.code {
                     KeyCode::Esc => {
                         // Clear filter entirely and exit input mode
-                        app.clear_text_filter();
+                        app.clear_view_text_filter();
                         ui_state.clear_filter_query();
                         ui_state.exit_filter_input_mode();
                     }
@@ -506,16 +506,16 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                         // Update filter in real-time
                         let query = ui_state.filter_query().to_string();
                         if query.is_empty() {
-                            app.clear_text_filter();
+                            app.clear_view_text_filter();
                         } else {
-                            app.set_text_filter(Some(query));
+                            app.set_view_text_filter(Some(query));
                         }
                     }
                     KeyCode::Char(c) => {
                         ui_state.append_filter_char(c);
                         // Update filter in real-time
                         let query = ui_state.filter_query().to_string();
-                        app.set_text_filter(Some(query));
+                        app.set_view_text_filter(Some(query));
                     }
                     _ => {}
                 }
@@ -530,9 +530,10 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
 
             // Enter filter mode with / (only in EmailList view)
             if key.code == KeyCode::Char('/') && app.view == View::EmailList {
-                if app.has_text_filter() {
+                if app.has_view_text_filter() {
                     // Re-enter input mode with existing query
-                    ui_state.enter_filter_input_mode_with_query(app.text_filter().unwrap_or(""));
+                    ui_state
+                        .enter_filter_input_mode_with_query(app.view_text_filter().unwrap_or(""));
                 } else {
                     // Enter fresh filter input mode
                     ui_state.enter_filter_input_mode();
@@ -647,8 +648,8 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 }
                 KeyCode::Esc => {
                     // In EmailList view with active filter, clear filter instead of exiting
-                    if app.view == View::EmailList && app.has_text_filter() {
-                        app.clear_text_filter();
+                    if app.view == View::EmailList && app.has_view_text_filter() {
+                        app.clear_view_text_filter();
                         ui_state.clear_filter_query();
                     } else if app.view != View::GroupList {
                         app.exit();
@@ -1014,7 +1015,7 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
-                    filtered: app.has_text_filter(),
+                    filtered: app.has_view_text_filter(),
                 });
             }
         }
@@ -1073,7 +1074,7 @@ fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
-                    filtered: app.has_text_filter(),
+                    filtered: app.has_view_text_filter(),
                 });
             }
         }
@@ -2123,7 +2124,7 @@ fn run_app(
                 match key.code {
                     KeyCode::Esc => {
                         // Clear filter entirely and exit input mode
-                        app.clear_text_filter();
+                        app.clear_view_text_filter();
                         ui_state.clear_filter_query();
                         ui_state.exit_filter_input_mode();
                     }
@@ -2136,16 +2137,16 @@ fn run_app(
                         // Update filter in real-time
                         let query = ui_state.filter_query().to_string();
                         if query.is_empty() {
-                            app.clear_text_filter();
+                            app.clear_view_text_filter();
                         } else {
-                            app.set_text_filter(Some(query));
+                            app.set_view_text_filter(Some(query));
                         }
                     }
                     KeyCode::Char(c) => {
                         ui_state.append_filter_char(c);
                         // Update filter in real-time
                         let query = ui_state.filter_query().to_string();
-                        app.set_text_filter(Some(query));
+                        app.set_view_text_filter(Some(query));
                     }
                     _ => {}
                 }
@@ -2160,9 +2161,10 @@ fn run_app(
 
             // Enter filter mode with / (only in EmailList view)
             if key.code == KeyCode::Char('/') && app.view == View::EmailList {
-                if app.has_text_filter() {
+                if app.has_view_text_filter() {
                     // Re-enter input mode with existing query
-                    ui_state.enter_filter_input_mode_with_query(app.text_filter().unwrap_or(""));
+                    ui_state
+                        .enter_filter_input_mode_with_query(app.view_text_filter().unwrap_or(""));
                 } else {
                     // Enter fresh filter input mode
                     ui_state.enter_filter_input_mode();
@@ -2304,8 +2306,8 @@ fn run_app(
                 }
                 KeyCode::Esc => {
                     // In EmailList view with active filter, clear filter instead of exiting
-                    if app.view == View::EmailList && app.has_text_filter() {
-                        app.clear_text_filter();
+                    if app.view == View::EmailList && app.has_view_text_filter() {
+                        app.clear_view_text_filter();
                         ui_state.clear_filter_query();
                     } else if app.view != View::GroupList {
                         app.exit();
@@ -2560,7 +2562,7 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState) {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
-                    filtered: app.has_text_filter(),
+                    filtered: app.has_view_text_filter(),
                 });
             }
         }
@@ -2634,7 +2636,7 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState) {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
-                    filtered: app.has_text_filter(),
+                    filtered: app.has_view_text_filter(),
                 });
             }
         }
@@ -2891,7 +2893,7 @@ mod tests {
             create_test_email_with_subject("1", "alice@example.com", "Important"),
             create_test_email_with_subject("2", "alice@example.com", "Other"),
         ]);
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_view_text_filter(Some("Important".to_string()));
         let mut ui_state = UiState::new();
 
         handle_delete_all(&app, &mut ui_state);
@@ -2961,7 +2963,7 @@ mod tests {
             create_test_email_with_subject("1", "alice@example.com", "Important"),
             create_test_email_with_subject("2", "alice@example.com", "Other"),
         ]);
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_view_text_filter(Some("Important".to_string()));
         let mut ui_state = UiState::new();
 
         handle_archive_all(&app, &mut ui_state);
@@ -3007,7 +3009,7 @@ mod tests {
             create_test_email_with_subject("1", "alice@example.com", "Important"),
             create_test_email_with_subject("2", "alice@example.com", "Other"),
         ]);
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_view_text_filter(Some("Important".to_string()));
         let mut ui_state = UiState::new();
 
         handle_demo_delete_all(&app, &mut ui_state);
@@ -3053,7 +3055,7 @@ mod tests {
             create_test_email_with_subject("1", "alice@example.com", "Important"),
             create_test_email_with_subject("2", "alice@example.com", "Other"),
         ]);
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_view_text_filter(Some("Important".to_string()));
         let mut ui_state = UiState::new();
 
         handle_demo_archive_all(&app, &mut ui_state);
@@ -3096,7 +3098,7 @@ mod tests {
         // Cursor starts at index 0 (newest email = "2" / "Other" since it was created last)
         // Select it, then apply filter that hides it
         app.toggle_email_selection();
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_view_text_filter(Some("Important".to_string()));
         let mut ui_state = UiState::new();
 
         // With only hidden selections, should fall through to cursor-thread behavior
@@ -3142,7 +3144,7 @@ mod tests {
         // Cursor starts at index 0 (newest email = "2" / "Other" since it was created last)
         // Select it, then apply filter that hides it
         app.toggle_email_selection();
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_view_text_filter(Some("Important".to_string()));
         let mut ui_state = UiState::new();
 
         // With only hidden selections, should fall through to cursor-thread behavior

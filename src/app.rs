@@ -144,8 +144,10 @@ pub struct App {
     pub text_view_scroll: usize,
     /// ID of the email being viewed in text view (for body caching)
     viewing_email_id: Option<String>,
-    /// Active text filter query (None = no filter active)
-    text_filter: Option<String>,
+    /// Active text filter query for GroupList view (None = no filter active)
+    group_text_filter: Option<String>,
+    /// Active text filter query for EmailList view (None = no filter active)
+    email_text_filter: Option<String>,
 }
 
 impl Default for App {
@@ -176,7 +178,8 @@ impl App {
             selected_emails: HashSet::new(),
             text_view_scroll: 0,
             viewing_email_id: None,
-            text_filter: None,
+            group_text_filter: None,
+            email_text_filter: None,
         }
     }
 
@@ -652,7 +655,7 @@ impl App {
         self.selected_email = None;
         self.viewing_group_key = None;
         self.clear_selection();
-        self.clear_text_filter();
+        self.clear_email_text_filter();
     }
 
     /// Enters the thread view for the currently selected email
@@ -828,9 +831,33 @@ impl App {
         }
     }
 
-    /// Sets the text filter query. Non-matching emails will be hidden.
-    pub fn set_text_filter(&mut self, query: Option<String>) {
-        self.text_filter = query;
+    // --- Group text filter methods ---
+
+    /// Sets the group text filter query
+    pub fn set_group_text_filter(&mut self, query: Option<String>) {
+        self.group_text_filter = query;
+    }
+
+    /// Clears the group text filter
+    pub fn clear_group_text_filter(&mut self) {
+        self.group_text_filter = None;
+    }
+
+    /// Returns whether a group text filter is currently active
+    pub fn has_group_text_filter(&self) -> bool {
+        self.group_text_filter.is_some()
+    }
+
+    /// Returns the current group text filter query, if any
+    pub fn group_text_filter(&self) -> Option<&str> {
+        self.group_text_filter.as_deref()
+    }
+
+    // --- Email text filter methods ---
+
+    /// Sets the email text filter query. Non-matching emails will be hidden.
+    pub fn set_email_text_filter(&mut self, query: Option<String>) {
+        self.email_text_filter = query;
         // Adjust selection if current email becomes hidden
         if let Some(idx) = self.selected_email {
             let filtered = self.filtered_threads_in_current_group();
@@ -840,24 +867,62 @@ impl App {
         }
     }
 
-    /// Clears the text filter (shows all emails)
-    pub fn clear_text_filter(&mut self) {
-        self.text_filter = None;
+    /// Clears the email text filter
+    pub fn clear_email_text_filter(&mut self) {
+        self.email_text_filter = None;
     }
 
-    /// Returns whether a text filter is currently active
-    pub fn has_text_filter(&self) -> bool {
-        self.text_filter.is_some()
+    /// Returns whether an email text filter is currently active
+    pub fn has_email_text_filter(&self) -> bool {
+        self.email_text_filter.is_some()
     }
 
-    /// Returns the current text filter query, if any
-    pub fn text_filter(&self) -> Option<&str> {
-        self.text_filter.as_deref()
+    /// Returns the current email text filter query, if any
+    pub fn email_text_filter(&self) -> Option<&str> {
+        self.email_text_filter.as_deref()
     }
 
-    /// Checks if an email matches the text filter (case-insensitive)
+    // --- View-routing text filter methods ---
+
+    /// Returns the text filter for the current view
+    pub fn view_text_filter(&self) -> Option<&str> {
+        match self.view {
+            View::GroupList => self.group_text_filter(),
+            View::EmailList => self.email_text_filter(),
+            _ => None,
+        }
+    }
+
+    /// Sets the text filter for the current view
+    pub fn set_view_text_filter(&mut self, query: Option<String>) {
+        match self.view {
+            View::GroupList => self.set_group_text_filter(query),
+            View::EmailList => self.set_email_text_filter(query),
+            _ => {}
+        }
+    }
+
+    /// Clears the text filter for the current view
+    pub fn clear_view_text_filter(&mut self) {
+        match self.view {
+            View::GroupList => self.clear_group_text_filter(),
+            View::EmailList => self.clear_email_text_filter(),
+            _ => {}
+        }
+    }
+
+    /// Returns whether a text filter is active for the current view
+    pub fn has_view_text_filter(&self) -> bool {
+        match self.view {
+            View::GroupList => self.has_group_text_filter(),
+            View::EmailList => self.has_email_text_filter(),
+            _ => false,
+        }
+    }
+
+    /// Checks if an email matches the email text filter (case-insensitive)
     fn email_matches_text_filter(&self, email: &Email) -> bool {
-        let Some(ref query) = self.text_filter else {
+        let Some(ref query) = self.email_text_filter else {
             return true;
         };
         let query_lower = query.to_lowercase();
@@ -866,7 +931,7 @@ impl App {
             || email.from_email.to_lowercase().contains(&query_lower)
     }
 
-    /// Returns threads in the current group, filtered based on thread_filter and text_filter settings
+    /// Returns threads in the current group, filtered based on thread_filter and email_text_filter settings
     pub fn filtered_threads_in_current_group(&self) -> Vec<&Email> {
         let Some(group) = self.current_group() else {
             return Vec::new();
@@ -887,8 +952,8 @@ impl App {
                 .collect(),
         };
 
-        // Then apply text filter if active
-        if self.text_filter.is_some() {
+        // Then apply email text filter if active
+        if self.email_text_filter.is_some() {
             thread_filtered
                 .into_iter()
                 .filter(|e| self.email_matches_text_filter(e))
@@ -918,7 +983,7 @@ impl App {
     /// Returns all emails in the current group that match the current filter.
     /// Unlike filtered_threads_in_current_group which returns one email per thread,
     /// this returns ALL emails that match (for bulk operations).
-    /// Applies both thread_filter and text_filter.
+    /// Applies both thread_filter and email_text_filter.
     pub fn filtered_emails_in_current_group(&self) -> Vec<&Email> {
         let Some(group) = self.current_group() else {
             return Vec::new();
@@ -939,8 +1004,8 @@ impl App {
                 .collect(),
         };
 
-        // Then apply text filter if active
-        if self.text_filter.is_some() {
+        // Then apply email text filter if active
+        if self.email_text_filter.is_some() {
             thread_filtered
                 .into_iter()
                 .filter(|e| self.email_matches_text_filter(e))
@@ -2364,7 +2429,7 @@ mod tests {
         assert_eq!(app.filtered_threads_in_current_group().len(), 3);
 
         // Apply filter for "hello"
-        app.set_text_filter(Some("hello".to_string()));
+        app.set_email_text_filter(Some("hello".to_string()));
         let filtered = app.filtered_threads_in_current_group();
         assert_eq!(filtered.len(), 2);
         assert!(
@@ -2374,7 +2439,7 @@ mod tests {
         );
 
         // Clear filter shows all emails again
-        app.clear_text_filter();
+        app.clear_email_text_filter();
         assert_eq!(app.filtered_threads_in_current_group().len(), 3);
     }
 
@@ -2387,7 +2452,7 @@ mod tests {
         ]);
 
         app.enter();
-        app.set_text_filter(Some("hello".to_string()));
+        app.set_email_text_filter(Some("hello".to_string()));
         let filtered = app.filtered_threads_in_current_group();
         assert_eq!(filtered.len(), 1);
         assert!(filtered[0].subject.contains("HELLO"));
@@ -2403,12 +2468,12 @@ mod tests {
 
         app.enter();
         // Filter by partial sender name (which appears in from field)
-        app.set_text_filter(Some("alice".to_string()));
+        app.set_email_text_filter(Some("alice".to_string()));
         // Both should match since they're from alice
         assert_eq!(app.filtered_threads_in_current_group().len(), 2);
 
         // Filter by something that doesn't match
-        app.set_text_filter(Some("bob".to_string()));
+        app.set_email_text_filter(Some("bob".to_string()));
         assert_eq!(app.filtered_threads_in_current_group().len(), 0);
     }
 
@@ -2425,7 +2490,7 @@ mod tests {
         app.selected_email = Some(2); // Select the third email
 
         // Apply filter that hides the selected email
-        app.set_text_filter(Some("First".to_string()));
+        app.set_email_text_filter(Some("First".to_string()));
 
         // Selection should be adjusted to first visible
         assert_eq!(app.selected_email, Some(0));
@@ -2440,11 +2505,70 @@ mod tests {
         ]);
 
         app.enter(); // Enter email list
-        app.set_text_filter(Some("test".to_string()));
-        assert!(app.has_text_filter());
+        app.set_email_text_filter(Some("test".to_string()));
+        assert!(app.has_email_text_filter());
 
         app.exit(); // Exit back to group list
-        assert!(!app.has_text_filter());
+        assert!(!app.has_email_text_filter());
+    }
+
+    #[test]
+    fn test_exit_to_groups_preserves_group_text_filter() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+        ]);
+
+        // Set a group text filter while in GroupList
+        app.set_group_text_filter(Some("alice".to_string()));
+        assert!(app.has_group_text_filter());
+
+        // Enter EmailList, set an email filter
+        app.enter();
+        assert_eq!(app.view, View::EmailList);
+        app.set_email_text_filter(Some("test".to_string()));
+
+        // Exit back to GroupList
+        app.exit();
+        assert_eq!(app.view, View::GroupList);
+
+        // Email filter should be cleared, group filter should be preserved
+        assert!(!app.has_email_text_filter());
+        assert!(app.has_group_text_filter());
+        assert_eq!(app.group_text_filter(), Some("alice"));
+    }
+
+    #[test]
+    fn test_view_text_filter_returns_correct_filter_for_view() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+        ]);
+
+        // In GroupList, view_text_filter should return group filter
+        app.set_group_text_filter(Some("group query".to_string()));
+        app.set_email_text_filter(Some("email query".to_string()));
+        assert_eq!(app.view, View::GroupList);
+        assert_eq!(app.view_text_filter(), Some("group query"));
+        assert!(app.has_view_text_filter());
+
+        // In EmailList, view_text_filter should return email filter
+        app.enter();
+        assert_eq!(app.view, View::EmailList);
+        assert_eq!(app.view_text_filter(), Some("email query"));
+        assert!(app.has_view_text_filter());
+
+        // set_view_text_filter dispatches to the correct filter
+        app.set_view_text_filter(Some("new email query".to_string()));
+        assert_eq!(app.email_text_filter(), Some("new email query"));
+        assert_eq!(app.group_text_filter(), Some("group query")); // unchanged
+
+        // clear_view_text_filter clears only the current view's filter
+        app.clear_view_text_filter();
+        assert!(!app.has_email_text_filter());
+        assert!(app.has_group_text_filter()); // still active
     }
 
     #[test]
@@ -2608,7 +2732,7 @@ mod tests {
         app.selected_emails.insert("3".to_string());
 
         // Apply filter that hides email 2 ("Urgent task")
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_email_text_filter(Some("Important".to_string()));
 
         // Remove selected threads (should only remove 1 and 3)
         app.remove_selected_threads();
@@ -2666,7 +2790,7 @@ mod tests {
         app.selected_emails.insert("2".to_string());
 
         // Filter to only show "Important" — hides email 2
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_email_text_filter(Some("Important".to_string()));
 
         assert!(app.has_selection(), "Selection still exists");
         assert!(
@@ -2690,7 +2814,7 @@ mod tests {
         app.selected_emails.insert("2".to_string());
 
         // Filter to only show "Important" — hides email 2 but email 1 is still visible
-        app.set_text_filter(Some("Important".to_string()));
+        app.set_email_text_filter(Some("Important".to_string()));
 
         assert!(
             app.has_visible_selection(),

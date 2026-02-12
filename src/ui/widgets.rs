@@ -718,7 +718,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         };
 
         // Build text filter indicator
-        let text_filter_indicator = if let Some(query) = self.app.text_filter() {
+        let text_filter_indicator = if let Some(query) = self.app.email_text_filter() {
             format!(" [filter: {}]", query)
         } else {
             String::new()
@@ -757,7 +757,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Use filtered threads (respects both thread_filter and text_filter)
+        // Use filtered threads (respects both thread_filter and email_text_filter)
         let filtered_threads = self.app.filtered_threads_in_current_group();
 
         // Show message if group is empty (all emails deleted/archived)
@@ -775,7 +775,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         }
 
         // Show message if text filter is active but no threads match
-        if filtered_threads.is_empty() && self.app.has_text_filter() {
+        if filtered_threads.is_empty() && self.app.has_email_text_filter() {
             let msg = "No emails match filter (Esc: clear)";
             let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
             let y = inner.y + inner.height / 2;
@@ -1188,7 +1188,7 @@ impl Widget for HelpBarWidget<'_> {
                 }
             }
             View::EmailList => {
-                if self.app.has_text_filter() {
+                if self.app.has_email_text_filter() {
                     "j/k: navigate  /: edit filter  Esc: clear filter  a/d: archive/delete  ?: more"
                 } else if self.app.has_selection() {
                     "j/k: navigate  /: filter  a/d: archive/delete selected  q: back  ?: more"
