@@ -467,33 +467,23 @@ impl App {
         matches_thread_filter && self.group_matches_text_filter(group)
     }
 
-    /// Selects the next group in the list
+    /// Selects the next group in the list, skipping groups hidden by any active filter
     fn select_next_group(&mut self) {
-        if self.thread_filter != ThreadFilter::All {
-            // Find next group that matches the filter
-            for i in (self.selected_group + 1)..self.groups.len() {
-                if self.group_matches_all_filters(&self.groups[i]) {
-                    self.selected_group = i;
-                    return;
-                }
+        for i in (self.selected_group + 1)..self.groups.len() {
+            if self.group_matches_all_filters(&self.groups[i]) {
+                self.selected_group = i;
+                return;
             }
-        } else if !self.groups.is_empty() && self.selected_group < self.groups.len() - 1 {
-            self.selected_group += 1;
         }
     }
 
-    /// Selects the previous group in the list
+    /// Selects the previous group in the list, skipping groups hidden by any active filter
     fn select_previous_group(&mut self) {
-        if self.thread_filter != ThreadFilter::All {
-            // Find previous group that matches the filter
-            for i in (0..self.selected_group).rev() {
-                if self.group_matches_all_filters(&self.groups[i]) {
-                    self.selected_group = i;
-                    return;
-                }
+        for i in (0..self.selected_group).rev() {
+            if self.group_matches_all_filters(&self.groups[i]) {
+                self.selected_group = i;
+                return;
             }
-        } else if self.selected_group > 0 {
-            self.selected_group -= 1;
         }
     }
 
@@ -2961,5 +2951,69 @@ mod tests {
         let filtered = app.filtered_groups();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].key, "charlie@example.com");
+    }
+
+    #[test]
+    fn test_select_next_group_skips_text_filtered_groups() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+            create_test_email("3", "charlie@example.com"),
+        ]);
+
+        // alice=0, bob=1, charlie=2
+        app.selected_group = 0;
+        assert_eq!(app.groups[0].key, "alice@example.com");
+
+        // Filter hides bob (only alice and charlie visible)
+        app.set_group_text_filter(Some("li".to_string()));
+        // Re-select alice after filter adjustment
+        app.selected_group = 0;
+
+        // j from alice should skip bob and land on charlie
+        app.view = View::GroupList;
+        app.select_next();
+        assert_eq!(app.groups[app.selected_group].key, "charlie@example.com");
+    }
+
+    #[test]
+    fn test_select_previous_group_skips_text_filtered_groups() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+            create_test_email("3", "charlie@example.com"),
+        ]);
+
+        // Filter hides bob (only alice and charlie visible)
+        app.set_group_text_filter(Some("li".to_string()));
+        // Select charlie
+        app.selected_group = 2;
+
+        // k from charlie should skip bob and land on alice
+        app.view = View::GroupList;
+        app.select_previous();
+        assert_eq!(app.groups[app.selected_group].key, "alice@example.com");
+    }
+
+    #[test]
+    fn test_select_next_group_stays_at_last_visible_group() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+            create_test_email("3", "charlie@example.com"),
+        ]);
+
+        // Filter: only alice and charlie visible
+        app.set_group_text_filter(Some("li".to_string()));
+        // Select charlie (last visible)
+        app.selected_group = 2;
+
+        // j from charlie should not advance
+        app.view = View::GroupList;
+        app.select_next();
+        assert_eq!(app.groups[app.selected_group].key, "charlie@example.com");
     }
 }
