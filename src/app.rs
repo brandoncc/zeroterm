@@ -457,13 +457,14 @@ impl App {
         }
     }
 
-    /// Checks if a group matches the current filter
-    fn group_matches_filter(&self, group: &EmailGroup) -> bool {
-        match self.thread_filter {
+    /// Checks if a group matches all active filters (thread filter and text filter)
+    fn group_matches_all_filters(&self, group: &EmailGroup) -> bool {
+        let matches_thread_filter = match self.thread_filter {
             ThreadFilter::All => true,
             ThreadFilter::OnlyThreads => self.group_has_multi_message_threads(group),
             ThreadFilter::NoThreads => self.group_has_single_message_threads(group),
-        }
+        };
+        matches_thread_filter && self.group_matches_text_filter(group)
     }
 
     /// Selects the next group in the list
@@ -471,7 +472,7 @@ impl App {
         if self.thread_filter != ThreadFilter::All {
             // Find next group that matches the filter
             for i in (self.selected_group + 1)..self.groups.len() {
-                if self.group_matches_filter(&self.groups[i]) {
+                if self.group_matches_all_filters(&self.groups[i]) {
                     self.selected_group = i;
                     return;
                 }
@@ -486,7 +487,7 @@ impl App {
         if self.thread_filter != ThreadFilter::All {
             // Find previous group that matches the filter
             for i in (0..self.selected_group).rev() {
-                if self.group_matches_filter(&self.groups[i]) {
+                if self.group_matches_all_filters(&self.groups[i]) {
                     self.selected_group = i;
                     return;
                 }
@@ -974,28 +975,10 @@ impl App {
 
     /// Returns groups filtered based on thread_filter and group_text_filter settings
     pub fn filtered_groups(&self) -> Vec<&EmailGroup> {
-        let thread_filtered: Vec<&EmailGroup> = match self.thread_filter {
-            ThreadFilter::All => self.groups.iter().collect(),
-            ThreadFilter::OnlyThreads => self
-                .groups
-                .iter()
-                .filter(|g| self.group_has_multi_message_threads(g))
-                .collect(),
-            ThreadFilter::NoThreads => self
-                .groups
-                .iter()
-                .filter(|g| self.group_has_single_message_threads(g))
-                .collect(),
-        };
-
-        if self.group_text_filter.is_some() {
-            thread_filtered
-                .into_iter()
-                .filter(|g| self.group_matches_text_filter(g))
-                .collect()
-        } else {
-            thread_filtered
-        }
+        self.groups
+            .iter()
+            .filter(|g| self.group_matches_all_filters(g))
+            .collect()
     }
 
     /// Returns all emails in the current group that match the current filter.
@@ -2920,5 +2903,63 @@ mod tests {
         let filtered = app.filtered_groups();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].key, "alice@example.com");
+    }
+
+    #[test]
+    fn test_group_matches_all_filters_thread_passes_text_fails() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
+        ]);
+
+        // Thread filter passes (alice has multi-message thread)
+        app.toggle_thread_filter(); // All -> OnlyThreads
+        assert!(app.group_matches_all_filters(&app.groups[0].clone()));
+
+        // Text filter does not match
+        app.set_group_text_filter(Some("bob".to_string()));
+        assert!(!app.group_matches_all_filters(&app.groups[0].clone()));
+    }
+
+    #[test]
+    fn test_group_matches_all_filters_text_passes_thread_fails() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"), // single-message, no thread
+        ]);
+
+        // Text filter matches
+        app.set_group_text_filter(Some("alice".to_string()));
+        assert!(app.group_matches_all_filters(&app.groups[0].clone()));
+
+        // Thread filter does not match (alice has no multi-message thread)
+        app.toggle_thread_filter(); // All -> OnlyThreads
+        assert!(!app.group_matches_all_filters(&app.groups[0].clone()));
+    }
+
+    #[test]
+    fn test_filtered_groups_uses_unified_filter() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_a", "alice@example.com"),
+            create_test_email("3", "bob@example.com"),
+            create_test_email_with_thread("4", "thread_c", "charlie@example.com"),
+            create_test_email_with_thread("5", "thread_c", "charlie@example.com"),
+        ]);
+
+        // No filters: all 3 groups
+        assert_eq!(app.filtered_groups().len(), 3);
+
+        // OnlyThreads: alice and charlie (2 groups)
+        app.toggle_thread_filter();
+        assert_eq!(app.filtered_groups().len(), 2);
+
+        // OnlyThreads + text "char": only charlie
+        app.set_group_text_filter(Some("char".to_string()));
+        let filtered = app.filtered_groups();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].key, "charlie@example.com");
     }
 }
