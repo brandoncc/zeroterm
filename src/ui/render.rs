@@ -8,7 +8,8 @@ use crate::app::{App, View};
 use crate::ui::widgets::{
     AccountSelectWidget, AccountSelection, BusyModalWidget, ConfirmDialogWidget, EmailListWidget,
     FilterBarWidget, GroupListWidget, HelpBarWidget, HelpMenuWidget, InboxZeroWidget,
-    StatusModalWidget, TextViewWidget, ThreadViewWidget, UiState, UndoHistoryWidget,
+    PassiveFilterBarWidget, StatusModalWidget, TextViewWidget, ThreadViewWidget, UiState,
+    UndoHistoryWidget, help_text_for_app,
 };
 
 /// Renders the entire application UI
@@ -37,8 +38,17 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
             } else {
                 ui_state.viewport_heights.group_list = inner_height;
 
-                // Calculate scroll offset to keep selection visible
-                let selected = app.selected_group;
+                // Calculate scroll offset using filtered-list position (not unfiltered index),
+                // since GroupListWidget applies scroll_offset to the filtered list.
+                let selected = app
+                    .groups
+                    .get(app.selected_group)
+                    .and_then(|selected_group| {
+                        app.filtered_groups()
+                            .iter()
+                            .position(|g| g.key == selected_group.key)
+                    })
+                    .unwrap_or(0);
                 let height = inner_height;
                 let offset = &mut ui_state.group_scroll_offset;
 
@@ -125,6 +135,10 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
     if ui_state.is_filter_input_active() {
         let filter = FilterBarWidget::new(ui_state.filter_query());
         frame.render_widget(filter, chunks[1]);
+    } else if let Some(query) = app.view_text_filter() {
+        let help_text = help_text_for_app(app);
+        let passive = PassiveFilterBarWidget::new(query, help_text);
+        frame.render_widget(passive, chunks[1]);
     } else {
         let help = HelpBarWidget::new(app);
         frame.render_widget(help, chunks[1]);

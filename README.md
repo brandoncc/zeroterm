@@ -49,7 +49,7 @@ This design ensures you always know exactly what emails will be affected before 
 | `q` | Quit |
 | `Escape` | Go back to previous view |
 
-### Filter Mode (Email List View)
+### Filter Mode (Group List & Email List Views)
 | Key | Action |
 |-----|--------|
 | `/` | Enter filter mode |
@@ -62,6 +62,8 @@ This design ensures you always know exactly what emails will be affected before 
 | Key | Action |
 |-----|--------|
 | `Enter` | Open group (view emails) |
+| `/` | Filter groups (hides non-matches) |
+| `Escape` | Clear filter |
 | `A` | Archive all emails from sender |
 | `D` | Delete all emails from sender |
 
@@ -71,10 +73,10 @@ This design ensures you always know exactly what emails will be affected before 
 | `Enter` | View full thread |
 | `Space` | Toggle selection |
 | `/` | Filter emails (hides non-matches) |
-| `a` | Archive current email |
-| `A` | Archive selected/all emails from sender |
-| `d` | Delete current email |
-| `D` | Delete selected/all emails from sender |
+| `a` | Archive cursor thread, or selected threads if any are selected |
+| `A` | Archive all visible emails from sender (respects active filter) |
+| `d` | Delete cursor thread, or selected threads if any are selected |
+| `D` | Delete all visible emails from sender (respects active filter) |
 
 ### Thread View
 | Key | Action |

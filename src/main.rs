@@ -94,14 +94,14 @@ NAVIGATION:
     j/k              Move down/up in lists
     Enter            Select group or email / view email body
     Escape           Go back to previous view / clear filter
-    /                Filter emails (in email list view)
+    /                Filter groups or emails
     q                Quit
 
 ACTIONS:
-    a                Archive email (in group/email view)
-    d                Delete email (in group/email view)
-    A                Archive all emails from sender (with confirmation)
-    D                Delete all emails from sender (with confirmation)
+    a                Archive cursor thread, or selected threads
+    d                Delete cursor thread, or selected threads
+    A                Archive all visible emails from sender
+    D                Delete all visible emails from sender
     e                Open email in browser (Gmail)
     u                Undo last action
 
@@ -258,6 +258,7 @@ struct DemoUndoStorage {
 const DEMO_LATENCY_MS: u64 = 300;
 
 /// Pending operations in demo mode (mirrors PendingOp for real mode)
+#[derive(Debug)]
 enum DemoPendingOp {
     ArchiveGroup {
         emails: Vec<Email>,
@@ -487,13 +488,19 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
-            // Handle filter input mode (only in EmailList view)
+            // Handle filter input mode (GroupList and EmailList views)
             if ui_state.is_filter_input_active() {
                 match key.code {
                     KeyCode::Esc => {
-                        // Clear filter entirely and exit input mode
-                        app.clear_text_filter();
-                        ui_state.clear_filter_query();
+                        // Revert to previous filter and exit input mode
+                        let reverted = ui_state.revert_filter();
+                        if let Some(query) = &reverted {
+                            app.set_view_text_filter(Some(query.clone()));
+                            ui_state.set_filter_query(query);
+                        } else {
+                            app.clear_view_text_filter();
+                            ui_state.clear_filter_query();
+                        }
                         ui_state.exit_filter_input_mode();
                     }
                     KeyCode::Enter => {
@@ -505,16 +512,16 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                         // Update filter in real-time
                         let query = ui_state.filter_query().to_string();
                         if query.is_empty() {
-                            app.clear_text_filter();
+                            app.clear_view_text_filter();
                         } else {
-                            app.set_text_filter(Some(query));
+                            app.set_view_text_filter(Some(query));
                         }
                     }
                     KeyCode::Char(c) => {
                         ui_state.append_filter_char(c);
                         // Update filter in real-time
                         let query = ui_state.filter_query().to_string();
-                        app.set_text_filter(Some(query));
+                        app.set_view_text_filter(Some(query));
                     }
                     _ => {}
                 }
@@ -527,14 +534,20 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                 continue;
             }
 
-            // Enter filter mode with / (only in EmailList view)
-            if key.code == KeyCode::Char('/') && app.view == View::EmailList {
-                if app.has_text_filter() {
+            // Enter filter mode with / (GroupList and EmailList views)
+            if key.code == KeyCode::Char('/')
+                && matches!(app.view, View::GroupList | View::EmailList)
+            {
+                let current = app.view_text_filter().map(|s| s.to_string());
+                if app.has_view_text_filter() {
                     // Re-enter input mode with existing query
-                    ui_state.enter_filter_input_mode_with_query(app.text_filter().unwrap_or(""));
+                    ui_state.enter_filter_input_mode_with_query(
+                        current.as_deref().unwrap_or(""),
+                        current.as_deref(),
+                    );
                 } else {
                     // Enter fresh filter input mode
-                    ui_state.enter_filter_input_mode();
+                    ui_state.enter_filter_input_mode(current.as_deref());
                 }
                 continue;
             }
@@ -645,11 +658,12 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     ui_state.set_confirm(ConfirmAction::Quit);
                 }
                 KeyCode::Esc => {
-                    // In EmailList view with active filter, clear filter instead of exiting
-                    if app.view == View::EmailList && app.has_text_filter() {
-                        app.clear_text_filter();
+                    // Layer 2: clear active filter in current view
+                    if app.has_view_text_filter() {
+                        app.clear_view_text_filter();
                         ui_state.clear_filter_query();
                     } else if app.view != View::GroupList {
+                        // Layer 3: exit view (EmailList → GroupList; GroupList does nothing)
                         app.exit();
                     }
                 }
@@ -974,8 +988,8 @@ fn handle_demo_archive(app: &App, ui_state: &mut UiState) -> Option<DemoPendingO
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => None,
         View::EmailList => {
-            // Check if there are selected emails - require confirmation
-            if app.has_selection() {
+            // Check if there are visible selected emails - require confirmation
+            if app.has_visible_selection() {
                 let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
@@ -983,7 +997,7 @@ fn handle_demo_archive(app: &App, ui_state: &mut UiState) -> Option<DemoPendingO
                 return None;
             }
 
-            // No selection - archive the entire thread
+            // No visible selection - archive the entire thread
             let thread_emails: Vec<Email> =
                 app.current_thread_emails().into_iter().cloned().collect();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
@@ -1008,20 +1022,12 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {}
         View::EmailList => {
-            // If there are selected emails, archive those threads
-            if app.has_selection() {
-                let count = app.selected_thread_email_ids().len();
-                if count > 0 {
-                    ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
-                }
-                return;
-            }
-
-            // Archive all threads touched by this group's emails
+            // Archive all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
+                    filtered: app.has_view_text_filter(),
                 });
             }
         }
@@ -1041,8 +1047,8 @@ fn handle_demo_delete(app: &App, ui_state: &mut UiState) -> Option<DemoPendingOp
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => None,
         View::EmailList => {
-            // Check if there are selected emails - require confirmation
-            if app.has_selection() {
+            // Check if there are visible selected emails - require confirmation
+            if app.has_visible_selection() {
                 let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
@@ -1050,7 +1056,7 @@ fn handle_demo_delete(app: &App, ui_state: &mut UiState) -> Option<DemoPendingOp
                 return None;
             }
 
-            // No selection - delete the entire thread
+            // No visible selection - delete the entire thread
             let thread_emails: Vec<Email> =
                 app.current_thread_emails().into_iter().cloned().collect();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
@@ -1075,20 +1081,12 @@ fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
     match app.view {
         View::GroupList | View::UndoHistory | View::EmailBody => {}
         View::EmailList => {
-            // If there are selected emails, delete those threads
-            if app.has_selection() {
-                let count = app.selected_thread_email_ids().len();
-                if count > 0 {
-                    ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
-                }
-                return;
-            }
-
-            // Delete all threads touched by this group's emails
+            // Delete all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
+                    filtered: app.has_view_text_filter(),
                 });
             }
         }
@@ -2133,13 +2131,19 @@ fn run_app(
                 continue;
             }
 
-            // Handle filter input mode (only in EmailList view)
+            // Handle filter input mode (GroupList and EmailList views)
             if ui_state.is_filter_input_active() {
                 match key.code {
                     KeyCode::Esc => {
-                        // Clear filter entirely and exit input mode
-                        app.clear_text_filter();
-                        ui_state.clear_filter_query();
+                        // Revert to previous filter and exit input mode
+                        let reverted = ui_state.revert_filter();
+                        if let Some(query) = &reverted {
+                            app.set_view_text_filter(Some(query.clone()));
+                            ui_state.set_filter_query(query);
+                        } else {
+                            app.clear_view_text_filter();
+                            ui_state.clear_filter_query();
+                        }
                         ui_state.exit_filter_input_mode();
                     }
                     KeyCode::Enter => {
@@ -2151,16 +2155,16 @@ fn run_app(
                         // Update filter in real-time
                         let query = ui_state.filter_query().to_string();
                         if query.is_empty() {
-                            app.clear_text_filter();
+                            app.clear_view_text_filter();
                         } else {
-                            app.set_text_filter(Some(query));
+                            app.set_view_text_filter(Some(query));
                         }
                     }
                     KeyCode::Char(c) => {
                         ui_state.append_filter_char(c);
                         // Update filter in real-time
                         let query = ui_state.filter_query().to_string();
-                        app.set_text_filter(Some(query));
+                        app.set_view_text_filter(Some(query));
                     }
                     _ => {}
                 }
@@ -2173,14 +2177,20 @@ fn run_app(
                 continue;
             }
 
-            // Enter filter mode with / (only in EmailList view)
-            if key.code == KeyCode::Char('/') && app.view == View::EmailList {
-                if app.has_text_filter() {
+            // Enter filter mode with / (GroupList and EmailList views)
+            if key.code == KeyCode::Char('/')
+                && matches!(app.view, View::GroupList | View::EmailList)
+            {
+                let current = app.view_text_filter().map(|s| s.to_string());
+                if app.has_view_text_filter() {
                     // Re-enter input mode with existing query
-                    ui_state.enter_filter_input_mode_with_query(app.text_filter().unwrap_or(""));
+                    ui_state.enter_filter_input_mode_with_query(
+                        current.as_deref().unwrap_or(""),
+                        current.as_deref(),
+                    );
                 } else {
                     // Enter fresh filter input mode
-                    ui_state.enter_filter_input_mode();
+                    ui_state.enter_filter_input_mode(current.as_deref());
                 }
                 continue;
             }
@@ -2318,11 +2328,12 @@ fn run_app(
                     ui_state.set_confirm(ConfirmAction::Quit);
                 }
                 KeyCode::Esc => {
-                    // In EmailList view with active filter, clear filter instead of exiting
-                    if app.view == View::EmailList && app.has_text_filter() {
-                        app.clear_text_filter();
+                    // Layer 2: clear active filter in current view
+                    if app.has_view_text_filter() {
+                        app.clear_view_text_filter();
                         ui_state.clear_filter_query();
                     } else if app.view != View::GroupList {
+                        // Layer 3: exit view (EmailList → GroupList; GroupList does nothing)
                         app.exit();
                     }
                 }
@@ -2529,8 +2540,8 @@ fn handle_archive(
             // No action on single 'a' in group list, undo history, or text view
         }
         View::EmailList => {
-            // Check if there are selected emails - require confirmation
-            if app.has_selection() {
+            // Check if there are visible selected emails - require confirmation
+            if app.has_visible_selection() {
                 let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
@@ -2538,7 +2549,7 @@ fn handle_archive(
                 return Ok(());
             }
 
-            // No selection - archive the entire thread
+            // No visible selection - archive the entire thread
             let email_ids = app.current_thread_email_ids();
             let emails_for_undo = app.current_thread_emails_for_undo();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
@@ -2570,20 +2581,12 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState) {
             // No 'A' in group list view, undo history, or text view to prevent accidental bulk operations
         }
         View::EmailList => {
-            // If there are selected emails, archive those threads
-            if app.has_selection() {
-                let count = app.selected_thread_email_ids().len();
-                if count > 0 {
-                    ui_state.set_confirm(ConfirmAction::ArchiveSelected { count });
-                }
-                return;
-            }
-
-            // Archive all threads touched by this group's emails
+            // Archive all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::ArchiveEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
+                    filtered: app.has_view_text_filter(),
                 });
             }
         }
@@ -2611,8 +2614,8 @@ fn handle_delete(
             // No action on single 'd' in group list, undo history, or text view
         }
         View::EmailList => {
-            // Check if there are selected emails - require confirmation
-            if app.has_selection() {
+            // Check if there are visible selected emails - require confirmation
+            if app.has_visible_selection() {
                 let count = app.selected_thread_email_ids().len();
                 if count > 0 {
                     ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
@@ -2620,7 +2623,7 @@ fn handle_delete(
                 return Ok(());
             }
 
-            // No selection - delete the entire thread
+            // No visible selection - delete the entire thread
             let email_ids = app.current_thread_email_ids();
             let emails_for_undo = app.current_thread_emails_for_undo();
             let thread_id = app.current_email().map(|e| e.thread_id.clone());
@@ -2652,20 +2655,12 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState) {
             // No 'D' in group list view, undo history, or text view to prevent accidental bulk operations
         }
         View::EmailList => {
-            // If there are selected emails, delete those threads
-            if app.has_selection() {
-                let count = app.selected_thread_email_ids().len();
-                if count > 0 {
-                    ui_state.set_confirm(ConfirmAction::DeleteSelected { count });
-                }
-                return;
-            }
-
-            // Delete all threads touched by this group's emails
+            // Delete all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
                 ui_state.set_confirm(ConfirmAction::DeleteEmails {
                     sender: group.key.clone(),
                     count: app.current_group_thread_email_ids().len(),
+                    filtered: app.has_view_text_filter(),
                 });
             }
         }
@@ -2827,4 +2822,365 @@ fn handle_confirmed_action(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn create_test_email(id: &str, from: &str) -> Email {
+        Email::new(
+            id.to_string(),
+            format!("thread_{id}"),
+            from.to_string(),
+            "Subject".to_string(),
+            "Snippet".to_string(),
+            Utc::now(),
+        )
+    }
+
+    fn create_test_email_with_subject(id: &str, from: &str, subject: &str) -> Email {
+        Email::new(
+            id.to_string(),
+            format!("thread_{id}"),
+            from.to_string(),
+            subject.to_string(),
+            "Snippet".to_string(),
+            Utc::now(),
+        )
+    }
+
+    fn setup_app_in_email_list(emails: Vec<Email>) -> App {
+        let mut app = App::new();
+        app.set_emails(emails);
+        // Use enter() to navigate from GroupList into EmailList
+        app.enter();
+        assert_eq!(app.view, View::EmailList);
+        app
+    }
+
+    // --- handle_delete_all tests ---
+
+    #[test]
+    fn test_delete_all_without_selection_triggers_delete_emails() {
+        let app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        let mut ui_state = UiState::new();
+
+        handle_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_all_with_selection_still_triggers_delete_emails() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection();
+        let mut ui_state = UiState::new();
+
+        handle_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_all_with_text_filter_sets_filtered_true() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        app.set_view_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        handle_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails { filtered, .. }) => {
+                assert!(filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    // --- handle_archive_all tests ---
+
+    #[test]
+    fn test_archive_all_without_selection_triggers_archive_emails() {
+        let app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        let mut ui_state = UiState::new();
+
+        handle_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_archive_all_with_selection_still_triggers_archive_emails() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection();
+        let mut ui_state = UiState::new();
+
+        handle_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_archive_all_with_text_filter_sets_filtered_true() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        app.set_view_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        handle_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails { filtered, .. }) => {
+                assert!(filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    // --- handle_demo_delete_all tests ---
+
+    #[test]
+    fn test_demo_delete_all_with_selection_still_triggers_delete_emails() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection();
+        let mut ui_state = UiState::new();
+
+        handle_demo_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_demo_delete_all_with_text_filter_sets_filtered_true() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        app.set_view_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        handle_demo_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteEmails { filtered, .. }) => {
+                assert!(filtered);
+            }
+            other => panic!("Expected DeleteEmails, got {:?}", other),
+        }
+    }
+
+    // --- handle_demo_archive_all tests ---
+
+    #[test]
+    fn test_demo_archive_all_with_selection_still_triggers_archive_emails() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection();
+        let mut ui_state = UiState::new();
+
+        handle_demo_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails {
+                ref sender,
+                count,
+                filtered,
+            }) => {
+                assert_eq!(sender, "alice@example.com");
+                assert_eq!(count, 2);
+                assert!(!filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_demo_archive_all_with_text_filter_sets_filtered_true() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        app.set_view_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        handle_demo_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveEmails { filtered, .. }) => {
+                assert!(filtered);
+            }
+            other => panic!("Expected ArchiveEmails, got {:?}", other),
+        }
+    }
+
+    // --- handle_delete (lowercase d) tests ---
+
+    #[test]
+    fn test_delete_with_visible_selection_triggers_delete_selected() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection(); // select first email
+        let mut ui_state = UiState::new();
+
+        handle_demo_delete(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteSelected { count }) => {
+                assert!(count > 0);
+            }
+            other => panic!("Expected DeleteSelected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_with_only_hidden_selections_falls_through_to_cursor_thread() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        // Cursor starts at index 0 (newest email = "2" / "Other" since it was created last)
+        // Select it, then apply filter that hides it
+        app.toggle_email_selection();
+        app.set_view_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        // With only hidden selections, should fall through to cursor-thread behavior
+        let result = handle_demo_delete(&app, &mut ui_state);
+
+        // Should NOT show DeleteSelected confirmation
+        assert!(ui_state.confirm_action.is_none());
+        // Should return a DeleteThread pending op (cursor-thread behavior)
+        assert!(result.is_some(), "Expected DeleteThread pending op");
+        match result.unwrap() {
+            DemoPendingOp::DeleteThread { .. } => {}
+            other => panic!("Expected DeleteThread, got {:?}", other),
+        }
+    }
+
+    // --- handle_archive (lowercase a) tests ---
+
+    #[test]
+    fn test_archive_with_visible_selection_triggers_archive_selected() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.toggle_email_selection(); // select first email
+        let mut ui_state = UiState::new();
+
+        handle_demo_archive(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveSelected { count }) => {
+                assert!(count > 0);
+            }
+            other => panic!("Expected ArchiveSelected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_archive_with_only_hidden_selections_falls_through_to_cursor_thread() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email_with_subject("1", "alice@example.com", "Important"),
+            create_test_email_with_subject("2", "alice@example.com", "Other"),
+        ]);
+        // Cursor starts at index 0 (newest email = "2" / "Other" since it was created last)
+        // Select it, then apply filter that hides it
+        app.toggle_email_selection();
+        app.set_view_text_filter(Some("Important".to_string()));
+        let mut ui_state = UiState::new();
+
+        // With only hidden selections, should fall through to cursor-thread behavior
+        let result = handle_demo_archive(&app, &mut ui_state);
+
+        // Should NOT show ArchiveSelected confirmation
+        assert!(ui_state.confirm_action.is_none());
+        // Should return an ArchiveThread pending op (cursor-thread behavior)
+        assert!(result.is_some(), "Expected ArchiveThread pending op");
+        match result.unwrap() {
+            DemoPendingOp::ArchiveThread { .. } => {}
+            other => panic!("Expected ArchiveThread, got {:?}", other),
+        }
+    }
 }

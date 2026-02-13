@@ -32,9 +32,17 @@ fn format_date(date: &DateTime<Utc>) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmAction {
     /// Archive all emails in threads touched by this sender's emails
-    ArchiveEmails { sender: String, count: usize },
+    ArchiveEmails {
+        sender: String,
+        count: usize,
+        filtered: bool,
+    },
     /// Delete all emails in threads touched by this sender's emails
-    DeleteEmails { sender: String, count: usize },
+    DeleteEmails {
+        sender: String,
+        count: usize,
+        filtered: bool,
+    },
     /// Archive entire thread (all emails including other senders)
     ArchiveThread { thread_email_count: usize },
     /// Delete entire thread (all emails including other senders)
@@ -50,11 +58,33 @@ pub enum ConfirmAction {
 impl ConfirmAction {
     pub fn message(&self) -> String {
         match self {
-            ConfirmAction::ArchiveEmails { sender, count } => {
-                format!("📥 Archive {} email(s) from {}? (y/n)", count, sender)
+            ConfirmAction::ArchiveEmails {
+                sender,
+                count,
+                filtered,
+            } => {
+                if *filtered {
+                    format!(
+                        "📥 Archive {} filtered email(s) from {}? (y/n)",
+                        count, sender
+                    )
+                } else {
+                    format!("📥 Archive {} email(s) from {}? (y/n)", count, sender)
+                }
             }
-            ConfirmAction::DeleteEmails { sender, count } => {
-                format!("🗑  Delete {} email(s) from {}? (y/n)", count, sender)
+            ConfirmAction::DeleteEmails {
+                sender,
+                count,
+                filtered,
+            } => {
+                if *filtered {
+                    format!(
+                        "🗑  Delete {} filtered email(s) from {}? (y/n)",
+                        count, sender
+                    )
+                } else {
+                    format!("🗑  Delete {} email(s) from {}? (y/n)", count, sender)
+                }
             }
             ConfirmAction::ArchiveThread { thread_email_count } => {
                 format!(
@@ -150,6 +180,8 @@ pub struct UiState {
     pub filter_input_mode: bool,
     /// The current filter query being typed
     pub filter_query: String,
+    /// Snapshot of the filter query when entering input mode, for Esc-to-revert
+    filter_revert_query: Option<String>,
     /// State of the text view (loading, loaded, error)
     pub text_view_state: TextViewState,
 }
@@ -239,14 +271,22 @@ impl UiState {
     }
 
     /// Enter filter input mode (user is typing filter query)
-    pub fn enter_filter_input_mode(&mut self) {
+    /// Snapshots the current filter so Esc can revert to it.
+    pub fn enter_filter_input_mode(&mut self, current_filter: Option<&str>) {
         self.filter_input_mode = true;
+        self.filter_revert_query = current_filter.map(|s| s.to_string());
         self.filter_query.clear();
     }
 
     /// Enter filter input mode with existing query (for editing active filter)
-    pub fn enter_filter_input_mode_with_query(&mut self, query: &str) {
+    /// Snapshots the current filter so Esc can revert to it.
+    pub fn enter_filter_input_mode_with_query(
+        &mut self,
+        query: &str,
+        current_filter: Option<&str>,
+    ) {
         self.filter_input_mode = true;
+        self.filter_revert_query = current_filter.map(|s| s.to_string());
         self.filter_query = query.to_string();
     }
 
@@ -278,6 +318,17 @@ impl UiState {
     /// Clear the filter query
     pub fn clear_filter_query(&mut self) {
         self.filter_query.clear();
+    }
+
+    /// Set the filter query to a specific value
+    pub fn set_filter_query(&mut self, query: &str) {
+        self.filter_query = query.to_string();
+    }
+
+    /// Revert to the snapshotted filter query and clear the snapshot.
+    /// Returns the snapshot (None if there was no active filter when input mode started).
+    pub fn revert_filter(&mut self) -> Option<String> {
+        self.filter_revert_query.take()
     }
 }
 
@@ -594,7 +645,21 @@ impl Widget for GroupListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Show message if filter is active but no groups match
+        // Show message if text filter is active but no groups match
+        if filtered_groups.is_empty() && self.app.has_group_text_filter() {
+            let msg = "No matching groups (Esc: clear filter)";
+            let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
+            let y = inner.y + inner.height / 2;
+            buf.set_line(
+                x,
+                y,
+                &Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray))),
+                inner.width,
+            );
+            return;
+        }
+
+        // Show message if thread filter is active but no groups match
         if filtered_groups.is_empty() && self.app.thread_filter != crate::app::ThreadFilter::All {
             let msg = match self.app.thread_filter {
                 crate::app::ThreadFilter::OnlyThreads => {
@@ -688,7 +753,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         };
 
         // Build text filter indicator
-        let text_filter_indicator = if let Some(query) = self.app.text_filter() {
+        let text_filter_indicator = if let Some(query) = self.app.email_text_filter() {
             format!(" [filter: {}]", query)
         } else {
             String::new()
@@ -727,7 +792,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Use filtered threads (respects both thread_filter and text_filter)
+        // Use filtered threads (respects both thread_filter and email_text_filter)
         let filtered_threads = self.app.filtered_threads_in_current_group();
 
         // Show message if group is empty (all emails deleted/archived)
@@ -745,7 +810,7 @@ impl StatefulWidget for EmailListWidget<'_> {
         }
 
         // Show message if text filter is active but no threads match
-        if filtered_threads.is_empty() && self.app.has_text_filter() {
+        if filtered_threads.is_empty() && self.app.has_email_text_filter() {
             let msg = "No emails match filter (Esc: clear)";
             let x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
             let y = inner.y + inner.height / 2;
@@ -1136,6 +1201,114 @@ impl Widget for FilterBarWidget<'_> {
     }
 }
 
+/// Widget for the passive filter bar (confirmed filter + help text on same line)
+pub struct PassiveFilterBarWidget<'a> {
+    filter_query: &'a str,
+    help_text: &'a str,
+}
+
+impl<'a> PassiveFilterBarWidget<'a> {
+    pub fn new(filter_query: &'a str, help_text: &'a str) -> Self {
+        Self {
+            filter_query,
+            help_text,
+        }
+    }
+}
+
+impl Widget for PassiveFilterBarWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let width = area.width as usize;
+        if width == 0 {
+            return;
+        }
+
+        // Build filter portion: [filter: query]
+        let filter_prefix = "[filter: ";
+        let filter_suffix = "]";
+        let separator = " │ ";
+
+        // Calculate space available for filter text
+        let filter_chrome = filter_prefix.len() + filter_suffix.len();
+        let separator_len = separator.len();
+
+        // Minimum meaningful display: "[filter: q…] │ " + at least some help text
+        let min_filter_display = filter_chrome + 2; // at least "q…"
+
+        if width < min_filter_display {
+            // Too narrow for filter, just show help text
+            let line = Line::from(Span::styled(
+                self.help_text,
+                Style::default().fg(Color::DarkGray),
+            ));
+            buf.set_line(area.x, area.y, &line, area.width);
+            return;
+        }
+
+        // Calculate how much space filter+separator takes
+        let full_filter = format!("{}{}{}", filter_prefix, self.filter_query, filter_suffix);
+        let full_filter_len = full_filter.len();
+
+        let filter_display = if full_filter_len + separator_len <= width {
+            // Filter fits entirely, show it + separator + help text
+            full_filter
+        } else {
+            // Need to truncate filter query
+            let max_query_len = width
+                .saturating_sub(filter_chrome + separator_len)
+                .saturating_sub(1); // -1 for …
+            if max_query_len == 0 {
+                format!("{}…{}", filter_prefix, filter_suffix)
+            } else {
+                let truncated: String = self.filter_query.chars().take(max_query_len).collect();
+                format!("{}{}…{}", filter_prefix, truncated, filter_suffix)
+            }
+        };
+
+        let filter_len = filter_display.len();
+        let remaining = width.saturating_sub(filter_len + separator_len);
+
+        let help_portion: String = self.help_text.chars().take(remaining).collect();
+
+        let line = Line::from(vec![
+            Span::styled(filter_display, Style::default().fg(Color::DarkGray)),
+            Span::styled(separator, Style::default().fg(Color::DarkGray)),
+            Span::styled(help_portion, Style::default().fg(Color::DarkGray)),
+        ]);
+
+        buf.set_line(area.x, area.y, &line, area.width);
+    }
+}
+
+/// Returns the help bar text for the current view
+pub fn help_text_for_app(app: &App) -> &'static str {
+    match app.view {
+        View::GroupList => {
+            if app.groups.is_empty() {
+                "r: refresh  q: quit  ?: more"
+            } else if app.has_group_text_filter() {
+                "j/k: navigate  /: edit filter  Esc: clear filter  Enter: open  ?: more"
+            } else {
+                "j/k: navigate  /: filter  Enter: open  q: quit  ?: more"
+            }
+        }
+        View::EmailList => {
+            if app.has_email_text_filter() {
+                "j/k: navigate  /: edit filter  Esc: clear filter  a/d: archive/delete  ?: more"
+            } else if app.has_selection() {
+                "j/k: navigate  /: filter  a/d: archive/delete selected  q: back  ?: more"
+            } else {
+                "j/k: navigate  /: filter  a/d: archive/delete  q: back  ?: more"
+            }
+        }
+        View::Thread => {
+            "j/k: navigate  Enter: view body  e: browser  A/D: archive/delete  q: back  ?: more"
+        }
+        View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
+        View::EmailBody => "j/k: scroll  e: browser  Esc: back  q: quit  ?: more",
+    }
+}
+
 /// Widget for the help bar at the bottom
 pub struct HelpBarWidget<'a> {
     app: &'a App,
@@ -1149,32 +1322,8 @@ impl<'a> HelpBarWidget<'a> {
 
 impl Widget for HelpBarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let help_text = match self.app.view {
-            View::GroupList => {
-                if self.app.groups.is_empty() {
-                    "r: refresh  q: quit  ?: more"
-                } else {
-                    "j/k: navigate  Enter: open  q: quit  ?: more"
-                }
-            }
-            View::EmailList => {
-                if self.app.has_text_filter() {
-                    "j/k: navigate  /: edit filter  Esc: clear filter  a/d: archive/delete  ?: more"
-                } else if self.app.has_selection() {
-                    "j/k: navigate  /: filter  a/d: archive/delete selected  q: back  ?: more"
-                } else {
-                    "j/k: navigate  /: filter  a/d: archive/delete  q: back  ?: more"
-                }
-            }
-            View::Thread => {
-                "j/k: navigate  Enter: view body  e: browser  A/D: archive/delete  q: back  ?: more"
-            }
-            View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
-            View::EmailBody => "j/k: scroll  e: browser  Esc: back  q: quit  ?: more",
-        };
-
+        let help_text = help_text_for_app(self.app);
         let paragraph = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
-
         paragraph.render(area, buf);
     }
 }
@@ -1202,6 +1351,20 @@ impl HelpMenuWidget {
             ],
         );
 
+        let nav_with_group_filter = (
+            "Navigation",
+            vec![
+                ("j / ↓", "Move down"),
+                ("k / ↑", "Move up"),
+                ("g g", "Go to top"),
+                ("G", "Go to bottom"),
+                ("Ctrl+d", "Half page down"),
+                ("Ctrl+u", "Half page up"),
+                ("/", "Filter groups"),
+                ("Esc", "Clear filter"),
+            ],
+        );
+
         let nav_with_filter = (
             "Navigation",
             vec![
@@ -1218,7 +1381,7 @@ impl HelpMenuWidget {
 
         match self.view {
             View::GroupList => vec![
-                nav,
+                nav_with_group_filter,
                 (
                     "Actions",
                     vec![
@@ -1532,9 +1695,23 @@ mod tests {
         let action = ConfirmAction::ArchiveEmails {
             sender: "test@example.com".to_string(),
             count: 5,
+            filtered: false,
         };
         let msg = action.message();
         assert!(msg.contains("Archive 5 email(s)"));
+        assert!(msg.contains("test@example.com"));
+        assert!(!msg.contains("filtered"));
+    }
+
+    #[test]
+    fn test_confirm_action_archive_emails_filtered() {
+        let action = ConfirmAction::ArchiveEmails {
+            sender: "test@example.com".to_string(),
+            count: 2,
+            filtered: true,
+        };
+        let msg = action.message();
+        assert!(msg.contains("Archive 2 filtered email(s)"));
         assert!(msg.contains("test@example.com"));
     }
 
@@ -1543,9 +1720,23 @@ mod tests {
         let action = ConfirmAction::DeleteEmails {
             sender: "test@example.com".to_string(),
             count: 3,
+            filtered: false,
         };
         let msg = action.message();
         assert!(msg.contains("Delete 3 email(s)"));
+        assert!(msg.contains("test@example.com"));
+        assert!(!msg.contains("filtered"));
+    }
+
+    #[test]
+    fn test_confirm_action_delete_emails_filtered() {
+        let action = ConfirmAction::DeleteEmails {
+            sender: "test@example.com".to_string(),
+            count: 4,
+            filtered: true,
+        };
+        let msg = action.message();
+        assert!(msg.contains("Delete 4 filtered email(s)"));
         assert!(msg.contains("test@example.com"));
     }
 
@@ -1590,5 +1781,184 @@ mod tests {
 
         state.clear_status();
         assert!(state.status_message.is_none());
+    }
+
+    #[test]
+    fn test_enter_filter_input_mode_with_active_filter_snapshots_it() {
+        let mut state = UiState::new();
+        state.enter_filter_input_mode(Some("query"));
+        assert_eq!(state.revert_filter(), Some("query".to_string()));
+    }
+
+    #[test]
+    fn test_enter_filter_input_mode_with_no_filter_reverts_to_none() {
+        let mut state = UiState::new();
+        state.enter_filter_input_mode(None);
+        assert_eq!(state.revert_filter(), None);
+    }
+
+    #[test]
+    fn test_revert_filter_clears_snapshot_after_first_call() {
+        let mut state = UiState::new();
+        state.enter_filter_input_mode(Some("query"));
+        assert_eq!(state.revert_filter(), Some("query".to_string()));
+        assert_eq!(state.revert_filter(), None);
+    }
+
+    #[test]
+    fn test_enter_filter_input_mode_with_query_snapshots_current_filter() {
+        let mut state = UiState::new();
+        state.enter_filter_input_mode_with_query("editing", Some("original"));
+        assert_eq!(state.filter_query(), "editing");
+        assert_eq!(state.revert_filter(), Some("original".to_string()));
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let area = buf.area();
+        let mut text = String::new();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+        }
+        text
+    }
+
+    fn create_test_email(id: &str, from: &str) -> crate::email::Email {
+        crate::email::Email::new(
+            id.to_string(),
+            format!("thread_{id}"),
+            from.to_string(),
+            "Subject".to_string(),
+            "Snippet".to_string(),
+            chrono::Utc::now(),
+        )
+    }
+
+    #[test]
+    fn test_group_list_text_filter_no_matches_shows_empty_message() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+        ]);
+        app.set_group_text_filter(Some("nonexistent".to_string()));
+
+        // Verify preconditions
+        assert!(app.has_group_text_filter());
+        assert!(app.filtered_groups().is_empty());
+
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let widget = GroupListWidget::new(&app, 0);
+        widget.render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("No matching groups"),
+            "Expected 'No matching groups' in rendered output, got: {}",
+            text.trim()
+        );
+    }
+
+    #[test]
+    fn test_group_list_thread_filter_no_matches_shows_thread_message_when_no_text_filter() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+        ]);
+        // OnlyThreads filter with no multi-message threads → empty
+        app.toggle_thread_filter(); // All -> OnlyThreads
+
+        // Verify preconditions: no text filter, thread filter active, no groups match
+        assert!(!app.has_group_text_filter());
+        assert!(app.filtered_groups().is_empty());
+
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let widget = GroupListWidget::new(&app, 0);
+        widget.render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("No senders with threads"),
+            "Expected thread filter message in rendered output, got: {}",
+            text.trim()
+        );
+        assert!(
+            !text.contains("No matching groups"),
+            "Should not show text filter message when no text filter is active"
+        );
+    }
+
+    #[test]
+    fn test_group_list_scroll_offset_uses_filtered_position() {
+        // Regression test: when selected_group is at a high unfiltered index
+        // but the text filter produces a short filtered list, the scroll offset
+        // should be based on the filtered-list position, not the unfiltered index.
+        let mut app = App::new();
+        // Create groups: alice, bob, charlie, dave, eve
+        // Alphabetical sort means: alice=0, bob=1, charlie=2, dave=3, eve=4
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+            create_test_email("3", "charlie@example.com"),
+            create_test_email("4", "dave@example.com"),
+            create_test_email("5", "eve@example.com"),
+        ]);
+
+        // Select eve (unfiltered index 4)
+        let eve_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "eve@example.com")
+            .unwrap();
+        app.selected_group = eve_idx;
+
+        // Apply text filter that matches only eve (filtered list has 1 item)
+        app.set_group_text_filter(Some("eve".to_string()));
+        let filtered = app.filtered_groups();
+        assert_eq!(filtered.len(), 1, "Filter should match only eve");
+
+        // eve is at unfiltered index 4, but filtered-list position 0
+        assert_eq!(eve_idx, 4, "eve should be at unfiltered index 4");
+
+        // Compute the filtered-list position of eve (the way render.rs should do it)
+        let filtered_pos = app
+            .groups
+            .get(app.selected_group)
+            .and_then(|selected_group| {
+                app.filtered_groups()
+                    .iter()
+                    .position(|g| g.key == selected_group.key)
+            })
+            .unwrap_or(0);
+        assert_eq!(filtered_pos, 0, "eve should be at filtered position 0");
+
+        // Render with the correct filtered-position-based offset (0 since list is short)
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let widget = GroupListWidget::new(&app, 0);
+        widget.render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("eve@example.com"),
+            "Selected group (eve) should appear in rendered output with correct offset, got: {}",
+            text.trim()
+        );
+
+        // Verify that using the unfiltered index as offset shows nothing
+        // (the old buggy behavior: skip(4) on a 1-item filtered list = nothing rendered)
+        let mut buf2 = Buffer::empty(area);
+        let buggy_widget = GroupListWidget::new(&app, eve_idx);
+        buggy_widget.render(area, &mut buf2);
+
+        let buggy_text = buffer_text(&buf2);
+        assert!(
+            !buggy_text.contains("eve@example.com"),
+            "Using unfiltered index as scroll offset should NOT show eve (proves the bug exists)"
+        );
     }
 }
