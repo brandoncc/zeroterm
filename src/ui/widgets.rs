@@ -1813,7 +1813,6 @@ mod tests {
         assert_eq!(state.revert_filter(), Some("original".to_string()));
     }
 
-    /// Helper to extract all text from a buffer as a single string
     fn buffer_text(buf: &Buffer) -> String {
         let area = buf.area();
         let mut text = String::new();
@@ -1890,6 +1889,76 @@ mod tests {
         assert!(
             !text.contains("No matching groups"),
             "Should not show text filter message when no text filter is active"
+        );
+    }
+
+    #[test]
+    fn test_group_list_scroll_offset_uses_filtered_position() {
+        // Regression test: when selected_group is at a high unfiltered index
+        // but the text filter produces a short filtered list, the scroll offset
+        // should be based on the filtered-list position, not the unfiltered index.
+        let mut app = App::new();
+        // Create groups: alice, bob, charlie, dave, eve
+        // Alphabetical sort means: alice=0, bob=1, charlie=2, dave=3, eve=4
+        app.set_emails(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "bob@example.com"),
+            create_test_email("3", "charlie@example.com"),
+            create_test_email("4", "dave@example.com"),
+            create_test_email("5", "eve@example.com"),
+        ]);
+
+        // Select eve (unfiltered index 4)
+        let eve_idx = app
+            .groups
+            .iter()
+            .position(|g| g.key == "eve@example.com")
+            .unwrap();
+        app.selected_group = eve_idx;
+
+        // Apply text filter that matches only eve (filtered list has 1 item)
+        app.set_group_text_filter(Some("eve".to_string()));
+        let filtered = app.filtered_groups();
+        assert_eq!(filtered.len(), 1, "Filter should match only eve");
+
+        // eve is at unfiltered index 4, but filtered-list position 0
+        assert_eq!(eve_idx, 4, "eve should be at unfiltered index 4");
+
+        // Compute the filtered-list position of eve (the way render.rs should do it)
+        let filtered_pos = app
+            .groups
+            .get(app.selected_group)
+            .and_then(|selected_group| {
+                app.filtered_groups()
+                    .iter()
+                    .position(|g| g.key == selected_group.key)
+            })
+            .unwrap_or(0);
+        assert_eq!(filtered_pos, 0, "eve should be at filtered position 0");
+
+        // Render with the correct filtered-position-based offset (0 since list is short)
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let widget = GroupListWidget::new(&app, 0);
+        widget.render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("eve@example.com"),
+            "Selected group (eve) should appear in rendered output with correct offset, got: {}",
+            text.trim()
+        );
+
+        // Verify that using the unfiltered index as offset shows nothing
+        // (the old buggy behavior: skip(4) on a 1-item filtered list = nothing rendered)
+        let mut buf2 = Buffer::empty(area);
+        let buggy_widget = GroupListWidget::new(&app, eve_idx);
+        buggy_widget.render(area, &mut buf2);
+
+        let buggy_text = buffer_text(&buf2);
+        assert!(
+            !buggy_text.contains("eve@example.com"),
+            "Using unfiltered index as scroll offset should NOT show eve (proves the bug exists)"
         );
     }
 }

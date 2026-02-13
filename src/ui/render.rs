@@ -38,8 +38,17 @@ pub fn render(frame: &mut Frame, app: &App, ui_state: &mut UiState) {
             } else {
                 ui_state.viewport_heights.group_list = inner_height;
 
-                // Calculate scroll offset to keep selection visible
-                let selected = app.selected_group;
+                // Calculate scroll offset using filtered-list position (not unfiltered index),
+                // since GroupListWidget applies scroll_offset to the filtered list.
+                let selected = app
+                    .groups
+                    .get(app.selected_group)
+                    .and_then(|selected_group| {
+                        app.filtered_groups()
+                            .iter()
+                            .position(|g| g.key == selected_group.key)
+                    })
+                    .unwrap_or(0);
                 let height = inner_height;
                 let offset = &mut ui_state.group_scroll_offset;
 
