@@ -81,6 +81,14 @@ This design ensures you always know exactly what emails will be affected before 
 ### Thread View
 | Key | Action |
 |-----|--------|
+| `Enter` | View email body |
+| `A` | Archive entire thread (with confirmation) |
+| `D` | Delete entire thread (with confirmation) |
+
+### Email Body View
+| Key | Action |
+|-----|--------|
+| `e` | Open in browser |
 | `A` | Archive entire thread (with confirmation) |
 | `D` | Delete entire thread (with confirmation) |
 

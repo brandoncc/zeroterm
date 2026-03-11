@@ -644,6 +644,12 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                     KeyCode::Char('e') => {
                         ui_state.set_status("Demo mode: would open email in browser".to_string());
                     }
+                    KeyCode::Char('A') => {
+                        handle_demo_archive_all(&app, &mut ui_state);
+                    }
+                    KeyCode::Char('D') => {
+                        handle_demo_delete_all(&app, &mut ui_state);
+                    }
                     KeyCode::Char('?') => {
                         ui_state.show_help();
                     }
@@ -1020,7 +1026,7 @@ fn handle_demo_archive(app: &App, ui_state: &mut UiState) -> Option<DemoPendingO
 /// Handles 'A' key in demo mode
 fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
     match app.view {
-        View::GroupList | View::UndoHistory | View::EmailBody => {}
+        View::GroupList | View::UndoHistory => {}
         View::EmailList => {
             // Archive all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
@@ -1031,7 +1037,7 @@ fn handle_demo_archive_all(app: &App, ui_state: &mut UiState) {
                 });
             }
         }
-        View::Thread => {
+        View::Thread | View::EmailBody => {
             let thread_count = app.current_thread_emails().len();
             if thread_count > 0 {
                 ui_state.set_confirm(ConfirmAction::ArchiveThread {
@@ -1079,7 +1085,7 @@ fn handle_demo_delete(app: &App, ui_state: &mut UiState) -> Option<DemoPendingOp
 /// Handles 'D' key in demo mode
 fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
     match app.view {
-        View::GroupList | View::UndoHistory | View::EmailBody => {}
+        View::GroupList | View::UndoHistory => {}
         View::EmailList => {
             // Delete all threads touched by this group's visible emails
             if let Some(group) = app.current_group() {
@@ -1090,7 +1096,7 @@ fn handle_demo_delete_all(app: &App, ui_state: &mut UiState) {
                 });
             }
         }
-        View::Thread => {
+        View::Thread | View::EmailBody => {
             let thread_count = app.current_thread_emails().len();
             if thread_count > 0 {
                 ui_state.set_confirm(ConfirmAction::DeleteThread {
@@ -2314,6 +2320,12 @@ fn run_app(
                             }
                         }
                     }
+                    KeyCode::Char('A') => {
+                        handle_archive_all(&app, &mut ui_state);
+                    }
+                    KeyCode::Char('D') => {
+                        handle_delete_all(&app, &mut ui_state);
+                    }
                     KeyCode::Char('?') => {
                         ui_state.show_help();
                     }
@@ -2577,8 +2589,8 @@ fn handle_archive(
 /// Handles the 'A' key - archive all threads in group
 fn handle_archive_all(app: &App, ui_state: &mut UiState) {
     match app.view {
-        View::GroupList | View::UndoHistory | View::EmailBody => {
-            // No 'A' in group list view, undo history, or text view to prevent accidental bulk operations
+        View::GroupList | View::UndoHistory => {
+            // No 'A' in group list view or undo history to prevent accidental bulk operations
         }
         View::EmailList => {
             // Archive all threads touched by this group's visible emails
@@ -2590,8 +2602,8 @@ fn handle_archive_all(app: &App, ui_state: &mut UiState) {
                 });
             }
         }
-        View::Thread => {
-            // In thread view, 'A' also archives the thread
+        View::Thread | View::EmailBody => {
+            // In thread/email body view, 'A' archives the thread
             let thread_count = app.current_thread_emails().len();
             if thread_count > 0 {
                 ui_state.set_confirm(ConfirmAction::ArchiveThread {
@@ -2651,8 +2663,8 @@ fn handle_delete(
 /// Handles the 'D' key - delete all threads in group
 fn handle_delete_all(app: &App, ui_state: &mut UiState) {
     match app.view {
-        View::GroupList | View::UndoHistory | View::EmailBody => {
-            // No 'D' in group list view, undo history, or text view to prevent accidental bulk operations
+        View::GroupList | View::UndoHistory => {
+            // No 'D' in group list view or undo history to prevent accidental bulk operations
         }
         View::EmailList => {
             // Delete all threads touched by this group's visible emails
@@ -2664,8 +2676,8 @@ fn handle_delete_all(app: &App, ui_state: &mut UiState) {
                 });
             }
         }
-        View::Thread => {
-            // In thread view, 'D' also deletes the thread
+        View::Thread | View::EmailBody => {
+            // In thread/email body view, 'D' deletes the thread
             let thread_count = app.current_thread_emails().len();
             if thread_count > 0 {
                 ui_state.set_confirm(ConfirmAction::DeleteThread {
@@ -3156,6 +3168,98 @@ mod tests {
                 assert!(count > 0);
             }
             other => panic!("Expected ArchiveSelected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_all_in_email_body_triggers_delete_thread() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.enter(); // EmailList -> Thread
+        app.enter_text_view("1");
+        assert_eq!(app.view, View::EmailBody);
+        let mut ui_state = UiState::new();
+
+        handle_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteThread {
+                thread_email_count, ..
+            }) => {
+                assert_eq!(thread_email_count, 1);
+            }
+            other => panic!("Expected DeleteThread, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_archive_all_in_email_body_triggers_archive_thread() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.enter(); // EmailList -> Thread
+        app.enter_text_view("1");
+        assert_eq!(app.view, View::EmailBody);
+        let mut ui_state = UiState::new();
+
+        handle_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveThread {
+                thread_email_count, ..
+            }) => {
+                assert_eq!(thread_email_count, 1);
+            }
+            other => panic!("Expected ArchiveThread, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_demo_delete_all_in_email_body_triggers_delete_thread() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.enter(); // EmailList -> Thread
+        app.enter_text_view("1");
+        assert_eq!(app.view, View::EmailBody);
+        let mut ui_state = UiState::new();
+
+        handle_demo_delete_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::DeleteThread {
+                thread_email_count, ..
+            }) => {
+                assert_eq!(thread_email_count, 1);
+            }
+            other => panic!("Expected DeleteThread, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_demo_archive_all_in_email_body_triggers_archive_thread() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.enter(); // EmailList -> Thread
+        app.enter_text_view("1");
+        assert_eq!(app.view, View::EmailBody);
+        let mut ui_state = UiState::new();
+
+        handle_demo_archive_all(&app, &mut ui_state);
+
+        match ui_state.confirm_action {
+            Some(ConfirmAction::ArchiveThread {
+                thread_email_count, ..
+            }) => {
+                assert_eq!(thread_email_count, 1);
+            }
+            other => panic!("Expected ArchiveThread, got {:?}", other),
         }
     }
 

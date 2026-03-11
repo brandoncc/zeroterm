@@ -1300,7 +1300,7 @@ pub fn help_text_for_app(app: &App) -> &'static str {
             "j/k: navigate  Enter: view body  e: browser  A/D: archive/delete  q: back  ?: more"
         }
         View::UndoHistory => "j/k: navigate  Enter: undo  q: back  ?: more",
-        View::EmailBody => "j/k: scroll  e: browser  Esc: back  q: quit  ?: more",
+        View::EmailBody => "j/k: scroll  e: browser  A/D: archive/delete  Esc: back  ?: more",
     }
 }
 
@@ -1437,7 +1437,14 @@ impl HelpMenuWidget {
                         ("Ctrl+u", "Half page up"),
                     ],
                 ),
-                ("Actions", vec![("e", "Open in browser")]),
+                (
+                    "Actions",
+                    vec![
+                        ("e", "Open in browser"),
+                        ("A", "Archive thread"),
+                        ("D", "Delete thread"),
+                    ],
+                ),
                 (
                     "General",
                     vec![("Esc", "Back"), ("q", "Quit"), ("?", "Toggle this help")],
