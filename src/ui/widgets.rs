@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, StatefulWidget, Table, TableState, Widget},
+    widgets::{Block, Borders, Paragraph, Row, StatefulWidget, Table, TableState, Widget, Wrap},
 };
 
 use crate::app::{App, GroupMode, UndoActionType, UndoContext, View};
@@ -1048,14 +1048,9 @@ impl Widget for TextViewWidget<'_> {
         let mut all_lines: Vec<Line> = header_lines;
         all_lines.extend(body_lines);
 
-        // Apply scroll offset
-        let visible_lines: Vec<Line> = all_lines
-            .into_iter()
-            .skip(self.scroll_offset)
-            .take(inner.height as usize)
-            .collect();
-
-        let paragraph = Paragraph::new(visible_lines);
+        let paragraph = Paragraph::new(all_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((self.scroll_offset as u16, 0));
         paragraph.render(inner, buf);
     }
 }
@@ -1959,6 +1954,97 @@ mod tests {
         assert!(
             !buggy_text.contains("eve@example.com"),
             "Using unfiltered index as scroll offset should NOT show eve (proves the bug exists)"
+        );
+    }
+
+    #[test]
+    fn test_text_view_wraps_long_lines() {
+        let mut app = App::new();
+        let email = crate::email::Email::new(
+            "1".to_string(),
+            "thread_1".to_string(),
+            "alice@example.com".to_string(),
+            "Test Subject".to_string(),
+            "Snippet".to_string(),
+            chrono::Utc::now(),
+        );
+        app.set_emails(vec![email]);
+        app.enter_text_view("1");
+
+        // Body line longer than widget width (widget inner width = 18 with borders)
+        let long_line = "AAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBB";
+        let state = TextViewState::Loaded(long_line.to_string());
+
+        // Widget: 20 wide (inner 18 after borders), 10 tall (inner 8 after borders)
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        let widget = TextViewWidget::new(&app, 0, &state);
+        widget.render(area, &mut buf);
+
+        // With wrapping enabled, the 35-char body should span two visual rows.
+        // Find which rows contain A's and B's respectively.
+        let full_text = buffer_text(&buf);
+
+        assert!(
+            full_text.contains("AAAAAAAAAAAAAAAAAA"),
+            "Buffer should contain the A portion of the long line, got: '{}'",
+            full_text.trim()
+        );
+        assert!(
+            full_text.contains("BBBBBBBBBBBBBBBBBB"),
+            "Buffer should contain the wrapped B portion of the long line, got: '{}'",
+            full_text.trim()
+        );
+    }
+
+    #[test]
+    fn test_text_view_scroll_offset_skips_visual_rows() {
+        let mut app = App::new();
+        let email = crate::email::Email::new(
+            "1".to_string(),
+            "thread_1".to_string(),
+            "alice@example.com".to_string(),
+            "Test Subject".to_string(),
+            "Snippet".to_string(),
+            chrono::Utc::now(),
+        );
+        app.set_emails(vec![email]);
+        app.enter_text_view("1");
+
+        // Body with a long line that wraps, followed by a marker line
+        let long_line = "AAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBB";
+        let body = format!("{}\nMARKER", long_line);
+        let state = TextViewState::Loaded(body);
+
+        // Widget: 60 wide (inner 58), 12 tall (inner 10) — wide enough for headers
+        let area = Rect::new(0, 0, 60, 12);
+
+        // Render with no scroll — MARKER should be visible
+        let mut buf_no_scroll = Buffer::empty(area);
+        let widget = TextViewWidget::new(&app, 0, &state);
+        widget.render(area, &mut buf_no_scroll);
+        let text_no_scroll = buffer_text(&buf_no_scroll);
+        assert!(
+            text_no_scroll.contains("MARKER"),
+            "MARKER should be visible with no scroll"
+        );
+
+        // Scroll down by 1 visual row — should skip 1 row, pushing content up.
+        // The "From:" header line scrolls off, so we should still see MARKER
+        // but "From:" should no longer be visible.
+        let mut buf_scrolled = Buffer::empty(area);
+        let widget = TextViewWidget::new(&app, 1, &state);
+        widget.render(area, &mut buf_scrolled);
+        let text_scrolled = buffer_text(&buf_scrolled);
+
+        assert!(
+            !text_scrolled.contains("From:"),
+            "From: header should be scrolled off after offset 1, got: '{}'",
+            text_scrolled.trim()
+        );
+        assert!(
+            text_scrolled.contains("MARKER"),
+            "MARKER should still be visible after scrolling 1 row"
         );
     }
 }
