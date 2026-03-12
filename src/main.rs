@@ -861,11 +861,12 @@ fn execute_demo_op(
                 undo_storage.push(thread_emails);
                 app.push_undo(undo_entry);
             }
+            let group_key = app.groups.get(app.selected_group).map(|g| g.key.clone());
             app.remove_thread(&thread_id);
             if app.view == View::Thread {
                 app.exit();
-            } else {
-                app.advance_or_exit_email_body();
+            } else if let Some(key) = &group_key {
+                app.advance_or_exit_email_body(key);
                 if app.view == View::EmailBody
                     && let Some(email) = app.viewing_email()
                 {
@@ -896,11 +897,12 @@ fn execute_demo_op(
                 undo_storage.push(thread_emails);
                 app.push_undo(undo_entry);
             }
+            let group_key = app.groups.get(app.selected_group).map(|g| g.key.clone());
             app.remove_thread(&thread_id);
             if app.view == View::Thread {
                 app.exit();
-            } else {
-                app.advance_or_exit_email_body();
+            } else if let Some(key) = &group_key {
+                app.advance_or_exit_email_body(key);
                 if app.view == View::EmailBody
                     && let Some(email) = app.viewing_email()
                 {
@@ -1922,11 +1924,13 @@ fn run_app(
                                     current_folder: "[Gmail]/All Mail".to_string(),
                                 };
                                 app.push_undo(undo_entry);
+                                let group_key =
+                                    app.groups.get(app.selected_group).map(|g| g.key.clone());
                                 app.remove_thread(&thread_id);
                                 if app.view == View::Thread {
                                     app.exit();
-                                } else {
-                                    app.advance_or_exit_email_body();
+                                } else if let Some(key) = &group_key {
+                                    app.advance_or_exit_email_body(key);
                                     if app.view == View::EmailBody
                                         && let Some(email) = app.viewing_email()
                                     {
@@ -2015,11 +2019,13 @@ fn run_app(
                                     current_folder: "[Gmail]/Trash".to_string(),
                                 };
                                 app.push_undo(undo_entry);
+                                let group_key =
+                                    app.groups.get(app.selected_group).map(|g| g.key.clone());
                                 app.remove_thread(&thread_id);
                                 if app.view == View::Thread {
                                     app.exit();
-                                } else {
-                                    app.advance_or_exit_email_body();
+                                } else if let Some(key) = &group_key {
+                                    app.advance_or_exit_email_body(key);
                                     if app.view == View::EmailBody
                                         && let Some(email) = app.viewing_email()
                                     {

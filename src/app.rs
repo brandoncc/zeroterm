@@ -685,17 +685,23 @@ impl App {
 
     /// After a thread is removed while in EmailBody view, navigates to the
     /// next email in the group or exits if no emails remain.
-    pub fn advance_or_exit_email_body(&mut self) {
+    pub fn advance_or_exit_email_body(&mut self, expected_group_key: &str) {
         if self.view != View::EmailBody {
             return;
         }
-        if let Some(email) = self.current_email() {
+        let still_same_group = self
+            .groups
+            .get(self.selected_group)
+            .is_some_and(|g| g.key == expected_group_key);
+        if still_same_group
+            && let Some(email) = self.current_email()
+        {
             let email_id = email.id.clone();
             self.text_view_scroll = 0;
             self.viewing_email_id = Some(email_id);
-        } else {
-            self.exit_text_view();
+            return;
         }
+        self.exit_text_view();
     }
 
     /// Returns the email being viewed in text view
@@ -3045,8 +3051,9 @@ mod tests {
         app.enter_text_view("1");
         assert_eq!(app.view, View::EmailBody);
 
+        let group_key = app.groups[app.selected_group].key.clone();
         app.remove_thread("thread_a");
-        app.advance_or_exit_email_body();
+        app.advance_or_exit_email_body(&group_key);
 
         // Should still be in EmailBody, now viewing the remaining email
         assert_eq!(app.view, View::EmailBody);
@@ -3066,8 +3073,9 @@ mod tests {
         app.enter_text_view("1");
         assert_eq!(app.view, View::EmailBody);
 
+        let group_key = app.groups[app.selected_group].key.clone();
         app.remove_thread("thread_a");
-        app.advance_or_exit_email_body();
+        app.advance_or_exit_email_body(&group_key);
 
         // Should exit EmailBody since no emails remain
         assert_ne!(app.view, View::EmailBody);
@@ -3089,8 +3097,34 @@ mod tests {
         app.enter(); // EmailList -> Thread
         assert_eq!(app.view, View::Thread);
 
-        app.advance_or_exit_email_body();
+        app.advance_or_exit_email_body("alice@example.com");
 
         assert_eq!(app.view, View::Thread);
+    }
+
+    #[test]
+    fn test_advance_or_exit_email_body_exits_when_group_emptied_and_replaced() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_b", "bob@example.com"),
+        ]);
+        // Navigate to alice's group, then into Thread, then EmailBody
+        app.enter(); // GroupList -> EmailList (alice's group)
+        app.enter(); // EmailList -> Thread
+        app.enter_text_view("1");
+        assert_eq!(app.view, View::EmailBody);
+        let group_key = app.groups[app.selected_group].key.clone();
+
+        // Remove alice's only thread — her group disappears, bob's group shifts into index 0
+        app.remove_thread("thread_a");
+        app.advance_or_exit_email_body(&group_key);
+
+        // Should exit EmailBody since the original group no longer exists
+        assert_ne!(app.view, View::EmailBody, "Should exit when group is gone");
+        assert!(
+            app.viewing_email_id().is_none(),
+            "Should not be viewing any email"
+        );
     }
 }
