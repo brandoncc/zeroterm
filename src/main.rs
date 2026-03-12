@@ -882,6 +882,8 @@ fn execute_demo_op(
             app.remove_thread(&thread_id);
             if app.view == View::Thread {
                 app.exit();
+            } else {
+                app.advance_or_exit_email_body();
             }
             None
         }
@@ -909,6 +911,8 @@ fn execute_demo_op(
             app.remove_thread(&thread_id);
             if app.view == View::Thread {
                 app.exit();
+            } else {
+                app.advance_or_exit_email_body();
             }
             None
         }
@@ -1914,6 +1918,8 @@ fn run_app(
                                 app.remove_thread(&thread_id);
                                 if app.view == View::Thread {
                                     app.exit();
+                                } else {
+                                    app.advance_or_exit_email_body();
                                 }
                             }
                             PendingOp::ArchiveSelected { count, emails } => {
@@ -1993,6 +1999,8 @@ fn run_app(
                                 app.remove_thread(&thread_id);
                                 if app.view == View::Thread {
                                     app.exit();
+                                } else {
+                                    app.advance_or_exit_email_body();
                                 }
                             }
                             PendingOp::DeleteSelected { count, emails } => {

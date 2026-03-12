@@ -683,6 +683,21 @@ impl App {
         self.viewing_email_id = None;
     }
 
+    /// After a thread is removed while in EmailBody view, navigates to the
+    /// next email in the group or exits if no emails remain.
+    pub fn advance_or_exit_email_body(&mut self) {
+        if self.view != View::EmailBody {
+            return;
+        }
+        if let Some(email) = self.current_email() {
+            let email_id = email.id.clone();
+            self.text_view_scroll = 0;
+            self.viewing_email_id = Some(email_id);
+        } else {
+            self.exit_text_view();
+        }
+    }
+
     /// Returns the email being viewed in text view
     pub fn viewing_email(&self) -> Option<&Email> {
         self.viewing_email_id
@@ -3015,5 +3030,67 @@ mod tests {
         app.view = View::GroupList;
         app.select_next();
         assert_eq!(app.groups[app.selected_group].key, "charlie@example.com");
+    }
+
+    #[test]
+    fn test_advance_or_exit_email_body_shows_next_email_when_group_has_remaining() {
+        let mut app = App::new();
+        app.set_emails(vec![
+            create_test_email_with_thread("1", "thread_a", "alice@example.com"),
+            create_test_email_with_thread("2", "thread_b", "alice@example.com"),
+        ]);
+        // Navigate to EmailList, then Thread for thread_a, then EmailBody
+        app.enter(); // GroupList -> EmailList
+        app.enter(); // EmailList -> Thread
+        app.enter_text_view("1");
+        assert_eq!(app.view, View::EmailBody);
+
+        app.remove_thread("thread_a");
+        app.advance_or_exit_email_body();
+
+        // Should still be in EmailBody, now viewing the remaining email
+        assert_eq!(app.view, View::EmailBody);
+        assert_eq!(app.viewing_email_id(), Some("2"));
+    }
+
+    #[test]
+    fn test_advance_or_exit_email_body_exits_when_no_remaining_emails() {
+        let mut app = App::new();
+        app.set_emails(vec![create_test_email_with_thread(
+            "1",
+            "thread_a",
+            "alice@example.com",
+        )]);
+        app.enter(); // GroupList -> EmailList
+        app.enter(); // EmailList -> Thread
+        app.enter_text_view("1");
+        assert_eq!(app.view, View::EmailBody);
+
+        app.remove_thread("thread_a");
+        app.advance_or_exit_email_body();
+
+        // Should exit EmailBody since no emails remain
+        assert_ne!(app.view, View::EmailBody);
+        assert!(
+            app.viewing_email_id().is_none(),
+            "Should not be viewing any email"
+        );
+    }
+
+    #[test]
+    fn test_advance_or_exit_email_body_is_noop_when_not_in_email_body() {
+        let mut app = App::new();
+        app.set_emails(vec![create_test_email_with_thread(
+            "1",
+            "thread_a",
+            "alice@example.com",
+        )]);
+        app.enter(); // GroupList -> EmailList
+        app.enter(); // EmailList -> Thread
+        assert_eq!(app.view, View::Thread);
+
+        app.advance_or_exit_email_body();
+
+        assert_eq!(app.view, View::Thread);
     }
 }
