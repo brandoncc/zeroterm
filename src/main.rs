@@ -3349,10 +3349,11 @@ mod tests {
 
         // Should still be in EmailBody viewing the next email
         assert_eq!(app.view, View::EmailBody);
-        // text_view_state should NOT still contain the old body
-        assert_ne!(
+        // text_view_state should be loaded with the new email's demo body
+        let new_email = app.viewing_email().unwrap();
+        assert_eq!(
             ui_state.text_view_state,
-            TextViewState::Loaded("old body content".to_string())
+            TextViewState::Loaded(demo_email_body(&new_email.from, &new_email.subject))
         );
     }
 }
