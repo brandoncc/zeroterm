@@ -693,9 +693,7 @@ impl App {
             .groups
             .get(self.selected_group)
             .is_some_and(|g| g.key == expected_group_key);
-        if still_same_group
-            && let Some(email) = self.current_email()
-        {
+        if still_same_group && let Some(email) = self.current_email() {
             let email_id = email.id.clone();
             self.text_view_scroll = 0;
             self.viewing_email_id = Some(email_id);
