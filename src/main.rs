@@ -695,17 +695,8 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                             let from = email.from.clone();
                             let subject = email.subject.clone();
                             app.enter_text_view(&email_id);
-                            // In demo mode, simulate having a body already loaded
-                            let body = format!(
-                                "This is a demo email body.\n\n\
-                                In real mode, the actual email content would be fetched from the server.\n\n\
-                                From: {}\n\
-                                Subject: {}\n\n\
-                                Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
-                                Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
-                                from, subject
-                            );
-                            ui_state.text_view_state = TextViewState::Loaded(body);
+                            ui_state.text_view_state =
+                                TextViewState::Loaded(demo_email_body(&from, &subject));
                         }
                     } else if app.view == View::EmailList
                         && !app.current_email_is_multi_message_thread()
@@ -716,17 +707,8 @@ fn run_demo_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result
                             let from = email.from.clone();
                             let subject = email.subject.clone();
                             app.enter_text_view(&email_id);
-                            // In demo mode, simulate having a body already loaded
-                            let body = format!(
-                                "This is a demo email body.\n\n\
-                                In real mode, the actual email content would be fetched from the server.\n\n\
-                                From: {}\n\
-                                Subject: {}\n\n\
-                                Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
-                                Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
-                                from, subject
-                            );
-                            ui_state.text_view_state = TextViewState::Loaded(body);
+                            ui_state.text_view_state =
+                                TextViewState::Loaded(demo_email_body(&from, &subject));
                         }
                     } else {
                         app.enter();
@@ -884,6 +866,12 @@ fn execute_demo_op(
                 app.exit();
             } else {
                 app.advance_or_exit_email_body();
+                if app.view == View::EmailBody
+                    && let Some(email) = app.viewing_email()
+                {
+                    ui_state.text_view_state =
+                        TextViewState::Loaded(demo_email_body(&email.from, &email.subject));
+                }
             }
             None
         }
@@ -913,6 +901,12 @@ fn execute_demo_op(
                 app.exit();
             } else {
                 app.advance_or_exit_email_body();
+                if app.view == View::EmailBody
+                    && let Some(email) = app.viewing_email()
+                {
+                    ui_state.text_view_state =
+                        TextViewState::Loaded(demo_email_body(&email.from, &email.subject));
+                }
             }
             None
         }
@@ -991,6 +985,19 @@ fn execute_demo_op(
             None
         }
     }
+}
+
+/// Generates a placeholder email body for demo mode
+fn demo_email_body(from: &str, subject: &str) -> String {
+    format!(
+        "This is a demo email body.\n\n\
+        In real mode, the actual email content would be fetched from the server.\n\n\
+        From: {}\n\
+        Subject: {}\n\n\
+        Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
+        Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+        from, subject
+    )
 }
 
 /// Handles 'a' key in demo mode - returns pending operation if action should proceed
@@ -1920,6 +1927,18 @@ fn run_app(
                                     app.exit();
                                 } else {
                                     app.advance_or_exit_email_body();
+                                    if app.view == View::EmailBody
+                                        && let Some(email) = app.viewing_email()
+                                    {
+                                        if let Some(body) = email.body.clone() {
+                                            ui_state.text_view_state = TextViewState::Loaded(body);
+                                        } else {
+                                            let uid = email.id.clone();
+                                            let folder = email.source_folder.clone();
+                                            ui_state.text_view_state = TextViewState::Loading;
+                                            cmd_tx.send(ImapCommand::FetchBody { uid, folder })?;
+                                        }
+                                    }
                                 }
                             }
                             PendingOp::ArchiveSelected { count, emails } => {
@@ -2001,6 +2020,18 @@ fn run_app(
                                     app.exit();
                                 } else {
                                     app.advance_or_exit_email_body();
+                                    if app.view == View::EmailBody
+                                        && let Some(email) = app.viewing_email()
+                                    {
+                                        if let Some(body) = email.body.clone() {
+                                            ui_state.text_view_state = TextViewState::Loaded(body);
+                                        } else {
+                                            let uid = email.id.clone();
+                                            let folder = email.source_folder.clone();
+                                            ui_state.text_view_state = TextViewState::Loading;
+                                            cmd_tx.send(ImapCommand::FetchBody { uid, folder })?;
+                                        }
+                                    }
                                 }
                             }
                             PendingOp::DeleteSelected { count, emails } => {
@@ -3294,5 +3325,34 @@ mod tests {
             DemoPendingOp::ArchiveThread { .. } => {}
             other => panic!("Expected ArchiveThread, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_execute_demo_op_resets_text_view_state_when_advancing_email_body() {
+        let mut app = setup_app_in_email_list(vec![
+            create_test_email("1", "alice@example.com"),
+            create_test_email("2", "alice@example.com"),
+        ]);
+        app.enter(); // EmailList -> Thread
+        app.enter_text_view("1");
+        assert_eq!(app.view, View::EmailBody);
+        let mut ui_state = UiState::new();
+        ui_state.text_view_state = TextViewState::Loaded("old body content".to_string());
+        let mut undo_storage = DemoUndoStorage::new();
+
+        let op = DemoPendingOp::DeleteThread {
+            thread_id: "thread_1".to_string(),
+            thread_emails: vec![app.viewing_email().unwrap().clone()],
+            subject: "Subject".to_string(),
+        };
+        execute_demo_op(&mut app, &mut ui_state, &mut undo_storage, op);
+
+        // Should still be in EmailBody viewing the next email
+        assert_eq!(app.view, View::EmailBody);
+        // text_view_state should NOT still contain the old body
+        assert_ne!(
+            ui_state.text_view_state,
+            TextViewState::Loaded("old body content".to_string())
+        );
     }
 }
